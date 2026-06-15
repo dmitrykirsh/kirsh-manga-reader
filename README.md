@@ -2,10 +2,15 @@
 
 Легкий, быстрый и стильный нативный ридер манги для Windows. Предназначен для комфортного чтения локальных коллекций манги в форматах папок и архивов, с автоматическим отслеживанием прогресса и **встроенным загрузчиком манги с сайтов**.
 
----
-<img width="1360" height="972" alt="image" src="https://github.com/user-attachments/assets/bb995783-d420-41c7-85a2-25e3325a7f4f" />
-<img width="1367" height="977" alt="image" src="https://github.com/user-attachments/assets/838a93ff-848c-48a4-af43-02a3e1d8dff1" />
-<img width="582" height="460" alt="image" src="https://github.com/user-attachments/assets/433ed833-92ac-451f-9c6b-721b74e18fc0" /> <img width="479" height="244" alt="image" src="https://github.com/user-attachments/assets/1ce5c9c5-2098-4a35-b2b2-7963860a0b0d" />
+<div align="center">
+  <img width="1360" height="972" alt="image" src="https://github.com/user-attachments/assets/bb995783-d420-41c7-85a2-25e3325a7f4f" />
+  <br/><br/><!-- Отступ -->
+  <img width="1367" height="977" alt="image" src="https://github.com/user-attachments/assets/838a93ff-848c-48a4-af43-02a3e1d8dff1" />
+  <br/><br/><!-- Отступ -->
+  <img width="582" height="460" alt="image" src="https://github.com/user-attachments/assets/433ed833-92ac-451f-9c6b-721b74e18fc0" />
+  <br/><br/><!-- Отступ -->
+  <img width="479" height="244" alt="image" src="https://github.com/user-attachments/assets/1ce5c9c5-2098-4a35-b2b2-7963860a0b0d" />
+</div>
 
 
 
