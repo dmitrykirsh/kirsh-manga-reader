@@ -4,16 +4,13 @@
 
 <div align="center">
   <img width="1360" height="972" alt="image" src="https://github.com/user-attachments/assets/bb995783-d420-41c7-85a2-25e3325a7f4f" />
-  <br/><br/><!-- Отступ -->
+  <br/><br/>
   <img width="1367" height="977" alt="image" src="https://github.com/user-attachments/assets/838a93ff-848c-48a4-af43-02a3e1d8dff1" />
-  <br/><br/><!-- Отступ -->
+  <br/><br/>
   <img width="582" height="460" alt="image" src="https://github.com/user-attachments/assets/433ed833-92ac-451f-9c6b-721b74e18fc0" />
-  <br/><br/><!-- Отступ -->
+  <br/><br/>
   <img width="479" height="244" alt="image" src="https://github.com/user-attachments/assets/1ce5c9c5-2098-4a35-b2b2-7963860a0b0d" />
 </div>
-
-
-
 
 ## ✨ Возможности
 
@@ -37,10 +34,6 @@
 - **Пользовательские обложки**: установка из файла на ПК или по прямой ссылке
 - **Удобный ридер**: плавный зум, подгонка по высоте окна, интуитивное управление мышью и клавиатурой
 
-### 🚀 Установка
-- Готовый `.exe` установщик с ярлыками в меню "Пуск" и на рабочем столе
-- Корректное удаление через систему
-
 ---
 
 ## 📥 Установка
@@ -50,6 +43,39 @@
 3. По умолчанию программа установится в `C:\Program Files\Kirsh Manga Reader`
 4. Запустите программу через ярлык на рабочем столе или из меню "Пуск"
 5. Откройте **Настройки** (⚙), укажите корневую папку с вашей коллекцией манги и нажмите "Сохранить изменения"
+
+---
+
+## 🛠️ Сборка из исходников
+
+1. **Установите Python 3.10+**
+
+2. **Клонируйте репозиторий**:
+   ```bash
+   git clone https://github.com/dmitrykirsh/kirsh-manga-reader.git
+   cd kirsh-manga-reader
+   ```
+
+3. **Установите зависимости**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Запустите программу**:
+   ```bash
+   python mr.py
+   ```
+
+### 📦 Сборка EXE (опционально)
+
+Если хотите собрать самостоятельный исполняемый файл:
+
+```bash
+pip install pyinstaller
+pyinstaller --onefile --windowed --icon=icon.ico --add-data "UnRAR.exe;." --add-data "icon.ico;." --hidden-import=selenium.webdriver.chrome.webdriver --hidden-import=selenium.webdriver.chrome.service --hidden-import=selenium.webdriver.chrome.options --name "KirshMangaReader" mr.py
+```
+
+Готовый EXE появится в папке `dist\KirshMangaReader.exe`
 
 ---
 
@@ -78,7 +104,7 @@
 
 ## 🔑 Авторизация для скачивания
 
-Для скачивания манги 18+ с сайтов авторизация:
+Для скачивания манги 18+ с сайтов нужна авторизация:
 
 | Сайт | Что нужно |
 | :--- | :--- |
@@ -101,4 +127,4 @@
 ## 📜 Лицензия и авторство
 
 Проект разработан и поддерживается пользователем **Kirsh**.  
-Распространяется как бесплатное программное обеспечение для личного использования.  
+Распространяется как бесплатное программное обеспечение для личного использования.
