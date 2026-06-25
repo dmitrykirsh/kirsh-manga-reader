@@ -56,26 +56,59 @@
    cd kirsh-manga-reader
    ```
 
-3. **Установите зависимости**:
+3. **Создайте и активируйте виртуальное окружение**:
+
+   Windows PowerShell:
+   ```powershell
+   py -3.10 -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   ```
+
+   Linux / macOS:
    ```bash
+   python3.10 -m venv .venv
+   source .venv/bin/activate
+   ```
+
+   Виртуальное окружение держит зависимости проекта отдельно от основного Python, поэтому глобальная установка Python не засоряется пакетами приложения.
+
+4. **Обновите pip и установите зависимости**:
+   ```bash
+   python -m pip install --upgrade pip
    pip install -r requirements.txt
    ```
 
-4. **Запустите программу**:
+5. **Запустите программу**:
    ```bash
    python mr.py
    ```
 
-### 📦 Сборка EXE (опционально)
+### 📦 Сборка EXE и setup.exe для Windows
 
-Если хотите собрать самостоятельный исполняемый файл:
+Для сборки установщика нужен Windows, Python 3.10+ и установленный [Inno Setup 6](https://jrsoftware.org/isinfo.php).
+Скрипт сам создаст `.venv`, поставит зависимости и соберёт приложение.
 
-```bash
-pip install pyinstaller
-pyinstaller --onefile --windowed --icon=icon.ico --add-data "UnRAR.exe;." --add-data "icon.ico;." --hidden-import=selenium.webdriver.chrome.webdriver --hidden-import=selenium.webdriver.chrome.service --hidden-import=selenium.webdriver.chrome.options --name "KirshMangaReader" mr.py
+```powershell
+.\build_windows.ps1
 ```
 
-Готовый EXE появится в папке `dist\KirshMangaReader.exe`
+Готовые файлы:
+- `dist\KirshMangaReader.exe` — самостоятельный EXE
+- `dist\installer\setup.exe` — установщик Windows
+
+Если нужен только EXE без установщика:
+
+```powershell
+.\build_windows.ps1 -SkipInstaller
+```
+
+Если PowerShell блокирует запуск локальных скриптов, разрешите запуск только для текущей консоли:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+```
+
+Параметры PyInstaller хранятся в `KirshMangaReader.spec`, а сценарий установщика — в `installer\KirshMangaReader.iss`.
 
 ---
 
@@ -126,5 +159,5 @@ pyinstaller --onefile --windowed --icon=icon.ico --add-data "UnRAR.exe;." --add-
 
 ## 📜 Лицензия и авторство
 
-Проект разработан и поддерживается пользователем **Kirsh**.  
+Проект разработан и поддерживается пользователем **Kirsh**.
 Распространяется как бесплатное программное обеспечение для личного использования.

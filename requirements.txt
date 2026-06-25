@@ -1,0 +1,6 @@
+PyQt6>=6.6
+natsort>=8.4
+rarfile>=4.1
+requests>=2.31
+selenium>=4.16
+webdriver-manager>=4.0
