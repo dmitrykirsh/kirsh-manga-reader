@@ -1,7 +1,7 @@
 import sys
 import os
+import logging  # <-- ПЕРЕНЕСТИ СЮДА!
 
-                                                      
 os.environ["QT_LOGGING_RULES"] = "*.debug=false;qt.gui.icc=false;qt.gui.imageio=false"
 
 import json
@@ -14,8 +14,8 @@ import re
 import ctypes
 try:
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('KirshMangaReader.2.0')
-except:
-    pass
+except Exception as e:
+    logging.warning(f"Не удалось задать AppUserModelID: {e}")
 from pathlib import Path
 from natsort import natsorted
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
@@ -56,6 +56,15 @@ else:
 USER_DATA_DIR = os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~\\AppData\\Local')), 'KirshMangaReader')
 os.makedirs(USER_DATA_DIR, exist_ok=True)
 
+import logging
+LOG_PATH = os.path.join(USER_DATA_DIR, "app.log")
+logging.basicConfig(
+    filename=LOG_PATH,
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    encoding="utf-8"
+)
+
 CONFIG_PATH = os.path.join(USER_DATA_DIR, "reader_config.json")
 TOKEN_PATH = os.path.join(USER_DATA_DIR, "mangalib_token.json")
 COVERS_DIR = os.path.join(USER_DATA_DIR, "custom_covers")
@@ -66,8 +75,8 @@ OLD_CONFIG_PATH = os.path.join(CONFIG_DIR, "reader_config.json")
 if os.path.exists(OLD_CONFIG_PATH) and not os.path.exists(CONFIG_PATH):
     try:
         shutil.move(OLD_CONFIG_PATH, CONFIG_PATH)
-    except:
-        pass
+    except Exception as e:
+        logging.error(f"Не удалось перенести старый конфиг: {e}")
 
 try:
     import rarfile
@@ -83,7 +92,28 @@ except ImportError:
 
 VALID_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp', '.bmp')
 ARCHIVE_EXTENSIONS = ('.zip', '.cbz', '.rar', '.cbr')
-COVER_CACHE = {}
+
+from collections import OrderedDict
+
+class BoundedCache(OrderedDict):
+    """Словарь-кэш с ограничением количества элементов.
+    Когда лимит превышен, самый старый добавленный элемент удаляется автоматически."""
+    def __init__(self, max_size=200, *args, **kwargs):
+        self.max_size = max_size
+        super().__init__(*args, **kwargs)
+        while len(self) > self.max_size:
+            oldest_key = next(iter(self))
+            del self[oldest_key]
+
+    def __setitem__(self, key, value):
+        if key in self:
+            self.move_to_end(key)
+        super().__setitem__(key, value)
+        if len(self) > self.max_size:
+            oldest_key = next(iter(self))
+            del self[oldest_key]
+
+COVER_CACHE = BoundedCache(max_size=200)
 
 def get_custom_cover_path(item_path):
     if not item_path: return None
@@ -96,27 +126,30 @@ def get_cover_bytes(item_path, is_folder=True):
         try:
             with open(cp, 'rb') as f:
                 return f.read()
-        except: pass
+        except Exception as e:
+            logging.error(f"Не удалось прочитать обложку {cp}: {e}")
     
     if is_folder:
         return find_first_cover_in_folder(item_path)
-    else:
-        if item_path in COVER_CACHE:
-            return COVER_CACHE[item_path]
-        try:
-            manga = MangaItem(item_path)
-            data = manga.get_page_data(0)
-            manga.close_archive()
-            return data
-        except:
-            return None
+    
+    if item_path in COVER_CACHE:
+        return COVER_CACHE[item_path]
+    try:
+        manga = MangaItem(item_path)
+        data = manga.get_page_data(0)
+        manga.close_archive()
+        return data
+    except Exception as e:
+        logging.error(f"Не удалось получить обложку из {item_path}: {e}")
+        return None
 
 def find_first_cover_in_folder(folder_path):
     cp = get_custom_cover_path(folder_path)
     if cp and os.path.exists(cp):
         try:
             with open(cp, 'rb') as f: return f.read()
-        except: pass
+        except Exception as e:
+            logging.error(f"Не удалось прочитать кастомную обложку {cp}: {e}")
     
     if folder_path in COVER_CACHE:
         return COVER_CACHE[folder_path]
@@ -133,7 +166,8 @@ def find_first_cover_in_folder(folder_path):
             if f_cp and os.path.exists(f_cp):
                 try:
                     with open(f_cp, 'rb') as f: return f.read()
-                except: pass
+                except Exception as e:
+                    logging.error(f"Не удалось прочитать обложку {f_cp}: {e}")
             manga = MangaItem(path)
             if manga.pages:
                 data = manga.get_page_data(0)
@@ -144,14 +178,17 @@ def find_first_cover_in_folder(folder_path):
         elif os.path.isdir(path):
             if item.startswith('.'): continue
             try: sub = os.listdir(path)
-            except: sub = []
+            except Exception as e:
+                logging.error(f"Не удалось прочитать папку {path}: {e}")
+                sub = []
             
             if any(f.lower().endswith(VALID_EXTENSIONS) for f in sub):
                 s_cp = get_custom_cover_path(path)
                 if s_cp and os.path.exists(s_cp):
                     try:
                         with open(s_cp, 'rb') as f: return f.read()
-                    except: pass
+                    except Exception as e:
+                        logging.error(f"Не удалось прочитать обложку {s_cp}: {e}")
                 manga = MangaItem(path)
                 if manga.pages:
                     data = manga.get_page_data(0)
@@ -166,7 +203,7 @@ def find_first_cover_in_folder(folder_path):
     return None
 
 class MangaItem:
-    GLOBAL_CACHE = {}
+    GLOBAL_CACHE = BoundedCache(max_size=300)
     
     def __init__(self, path):
         self.path = path
@@ -197,25 +234,23 @@ class MangaItem:
                 with zipfile.ZipFile(self.path, 'r') as z:
                     self.pages = [f for f in z.namelist() if f.lower().endswith(VALID_EXTENSIONS)]
                     self.real_archive_type = 'zip'
-            except Exception:
+            except Exception as e_zip_initial:
+                logging.error(f"Ошибка открытия ZIP/CBZ как ZIP: {e_zip_initial}")
                 if RAR_SUPPORT:
                     try:
                         with rarfile.RarFile(self.path, 'r') as r:
                             self.pages = [f for f in r.namelist() if f.lower().endswith(VALID_EXTENSIONS)]
                             self.real_archive_type = 'rar'
-                    except Exception: pass
+                    except Exception as e_rar_fallback:
+                        logging.error(f"Ошибка открытия ZIP/CBZ как RAR (fallback): {e_rar_fallback}")
         elif RAR_SUPPORT and self.path.lower().endswith(('.rar', '.cbr')):
             try:
                 with rarfile.RarFile(self.path, 'r') as r:
                     self.pages = [f for f in r.namelist() if f.lower().endswith(VALID_EXTENSIONS)]
                     self.real_archive_type = 'rar'
-            except Exception:
-                try:
-                    with zipfile.ZipFile(self.path, 'r') as z:
-                        self.pages = [f for f in z.namelist() if f.lower().endswith(VALID_EXTENSIONS)]
-                        self.real_archive_type = 'zip'
-                except Exception: pass
-                
+            except Exception as e:
+                logging.error(f"Ошибка открытия RAR/CBR: {e}")
+        
         self.pages = natsorted(self.pages)
         if self.pages:
             MangaItem.GLOBAL_CACHE[self.path] = self.pages
@@ -232,7 +267,8 @@ class MangaItem:
     def close_archive(self):
         if self._archive_handle:
             try: self._archive_handle.close()
-            except: pass
+            except Exception as e:
+                logging.error(f"Ошибка в MangaItem: {e}")
             self._archive_handle = None
 
     def get_page_data(self, index):
@@ -533,15 +569,7 @@ class ReaderPage(QWidget):
             return
         
         manga = self.reader_view.current_manga
-        
-                 
-        self.debug_archive(manga)
-        
         chapters = self.get_chapter_list(manga)
-        
-                         
-        print(f"Найдено глав/страниц: {len(chapters)}")
-        print(f"Первые 10: {chapters[:10]}")
         
         if not chapters:
             QMessageBox.information(self, "Оглавление", "Нет доступных глав")
@@ -579,143 +607,98 @@ class ReaderPage(QWidget):
         dialog.exec()
     
     def get_chapter_list(self, manga):
-        """Возвращает список глав - папки, которые содержат картинки напрямую"""
-        import zipfile
+        """Возвращает список глав"""
         from pathlib import Path
         import re
         
         chapters = []
         
+        # Если это архив - используем уже загруженный список страниц
         if manga.is_archive:
             try:
-                if manga.real_archive_type == 'zip':
-                    with zipfile.ZipFile(manga.path, 'r') as zf:
-                        all_names = zf.namelist()
-                        
-                        candidate_folders = set()
-                        for name in all_names:
-                            if '/' in name and name.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
-                                folder_path = '/'.join(name.split('/')[:-1])
-                                last_folder = folder_path.split('/')[-1]
-                                candidate_folders.add(last_folder)
-                        
-                        if candidate_folders:
-                                                                                     
-                            if len(candidate_folders) == 1:
-                                folder = list(candidate_folders)[0]
-                                prefix = f"{folder}/"
-                                images = [Path(name).stem for name in all_names 
-                                         if name.startswith(prefix) and name.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
-                                chapters = sorted(images)
-                            else:
-                                def extract_num(name):
-                                    nums = re.findall(r'\d+', name)
-                                    return int(nums[0]) if nums else 0
-                                chapters = sorted(candidate_folders, key=extract_num)
-                        else:
-                            images = [Path(name).stem for name in all_names 
-                                     if name.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
-                            chapters = sorted(images)
+                all_names = manga.pages
+                # Ищем папки внутри архива
+                candidate_folders = set()
+                for name in all_names:
+                    if '/' in name:
+                        folder_path = '/'.join(name.split('/')[:-1])
+                        last_folder = folder_path.split('/')[-1]
+                        candidate_folders.add(last_folder)
                 
-                elif manga.real_archive_type == 'rar' and RAR_SUPPORT:
-                    import rarfile
-                    with rarfile.RarFile(manga.path, 'r') as rf:
-                        all_names = rf.namelist()
-                        
-                        candidate_folders = set()
-                        for name in all_names:
-                            if '/' in name and name.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
-                                folder_path = '/'.join(name.split('/')[:-1])
-                                last_folder = folder_path.split('/')[-1]
-                                candidate_folders.add(last_folder)
-                        
-                        if candidate_folders:
-                                                                          
-                            if len(candidate_folders) == 1:
-                                folder = list(candidate_folders)[0]
-                                prefix = f"{folder}/"
-                                images = [Path(name).stem for name in all_names 
-                                         if name.startswith(prefix) and name.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
-                                chapters = sorted(images)
-                            else:
-                                def extract_num(name):
-                                    nums = re.findall(r'\d+', name)
-                                    return int(nums[0]) if nums else 0
-                                chapters = sorted(candidate_folders, key=extract_num)
-                        else:
-                            images = [Path(name).stem for name in all_names 
-                                     if name.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
-                            chapters = sorted(images)
-                        
-            except Exception as e:
-                print(f"Ошибка чтения архива: {e}")
-        else:
-                       
-            try:
-                manga_path = Path(manga.path)
-                subdirs = [d for d in manga_path.iterdir() if d.is_dir()]
-                if subdirs:
-                                                                             
-                    if len(subdirs) == 1:
-                        folder = subdirs[0]
-                        images = [f.stem for f in folder.iterdir() 
-                                 if f.suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp')]
+                if candidate_folders:
+                    # Если есть вложенные папки - это главы
+                    if len(candidate_folders) == 1:
+                        # Одна папка - значит это страницы внутри неё
+                        folder = list(candidate_folders)[0]
+                        prefix = f"{folder}/"
+                        images = [Path(name).stem for name in all_names if name.startswith(prefix)]
                         chapters = sorted(images)
                     else:
+                        # Несколько папок - это главы
+                        def extract_num(name):
+                            nums = re.findall(r'\d+', name)
+                            return int(nums[0]) if nums else 0
+                        chapters = sorted(candidate_folders, key=extract_num)
+                else:
+                    # Нет папок - значит страницы в корне
+                    chapters = sorted(Path(name).stem for name in all_names)
+            except Exception as e:
+                logging.error(f"Ошибка чтения архива {manga.path}: {e}")
+        else:
+            # Это папка на диске
+            try:
+                manga_path = Path(manga.path)
+                subdirs = [d for d in manga_path.iterdir() if d.is_dir() and not d.name.startswith('.')]
+                
+                if subdirs:
+                    # Есть подпапки
+                    if len(subdirs) == 1:
+                        # Одна папка - страницы в ней
+                        folder = subdirs[0]
+                        images = [f.stem for f in folder.iterdir() if f.suffix.lower() in VALID_EXTENSIONS]
+                        chapters = sorted(images)
+                    else:
+                        # Несколько папок - это главы
                         chapters = [d.name for d in sorted(subdirs)]
                 else:
-                    images = [f.stem for f in manga_path.iterdir() 
-                             if f.suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp')]
+                    # Страницы в корне
+                    images = [f.stem for f in manga_path.iterdir() if f.suffix.lower() in VALID_EXTENSIONS]
                     chapters = sorted(images)
             except Exception as e:
-                print(f"Ошибка чтения папки: {e}")
+                logging.error(f"Ошибка чтения папки {manga.path}: {e}")
         
         return chapters
     
     def get_first_page_of_chapter(self, manga, chapter_name):
-        """Возвращает индекс первой страницы главы или страницы"""
-        import zipfile
+        """Возвращает индекс первой страницы главы"""
         from pathlib import Path
         
         if manga.is_archive:
             try:
-                if manga.real_archive_type == 'zip':
-                    archive = zipfile.ZipFile(manga.path, 'r')
-                elif manga.real_archive_type == 'rar' and RAR_SUPPORT:
-                    import rarfile
-                    archive = rarfile.RarFile(manga.path, 'r')
-                else:
-                    return -1
+                all_files = manga.pages
+                # Сначала ищем точное совпадение имени страницы
+                for idx, page in enumerate(all_files):
+                    page_stem = Path(page).stem
+                    if page_stem == chapter_name:
+                        return idx
                 
-                with archive as ar:
-                    all_files = [name for name in ar.namelist() 
-                                if name.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]
-                    all_files.sort()
-                    
-                                                                   
-                    for idx, page in enumerate(all_files):
-                        page_stem = Path(page).stem
-                        if page_stem == chapter_name:
+                # Если не нашли - ищем как папку
+                for idx, page in enumerate(all_files):
+                    if '/' in page:
+                        parts = page.split('/')
+                        last_folder = parts[-2] if len(parts) >= 2 else None
+                        if last_folder == chapter_name:
                             return idx
-                    
-                                                    
-                    for idx, page in enumerate(all_files):
-                        if '/' in page:
-                            parts = page.split('/')
-                            last_folder = parts[-2] if len(parts) >= 2 else None
-                            if last_folder == chapter_name:
-                                return idx
-                            
             except Exception as e:
-                print(f"Ошибка: {e}")
+                logging.error(f"Ошибка поиска главы '{chapter_name}' в архиве {manga.path}: {e}")
         else:
-                       
+            # Папка на диске
             try:
                 manga_path = Path(manga.path)
                 all_images = []
                 for root, dirs, files in os.walk(manga_path):
                     for f in files:
-                        if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                        if f.lower().endswith(VALID_EXTENSIONS):
                             all_images.append(os.path.join(root, f))
                 all_images.sort()
                 
@@ -723,7 +706,7 @@ class ReaderPage(QWidget):
                     if Path(img).stem == chapter_name:
                         return idx
             except Exception as e:
-                print(f"Ошибка: {e}")
+                logging.error(f"Ошибка поиска главы '{chapter_name}' в папке {manga.path}: {e}")
         
         return -1
 
@@ -765,34 +748,6 @@ class ReaderPage(QWidget):
         nums = re.findall(r'\d+', name)
         return int(nums[0]) if nums else 0
         
-    def debug_archive(self, manga):
-        """Отладка: выводит структуру архива"""
-        import zipfile
-        import rarfile
-        
-        print("\n=== ОТЛАДКА АРХИВА ===")
-        print(f"Путь: {manga.path}")
-        print(f"Тип: {'ZIP' if manga.real_archive_type == 'zip' else 'RAR' if manga.real_archive_type == 'rar' else 'Неизвестный'}")
-        
-        if manga.real_archive_type == 'zip':
-            with zipfile.ZipFile(manga.path, 'r') as zf:
-                files = zf.namelist()
-                print(f"Всего файлов в архиве: {len(files)}")
-                print("\nПервые 20 элементов:")
-                for i, name in enumerate(files[:20]):
-                    print(f"  {i+1}. {name}")
-                print("\nТолько папки (уникальные):")
-                folders = set()
-                for name in files:
-                    if '/' in name:
-                        parts = name.split('/')
-                        for i in range(len(parts) - 1):
-                            folder = '/'.join(parts[:i+1])
-                            folders.add(folder)
-                for f in sorted(folders)[:20]:
-                    print(f"  {f}")
-        print("=======================\n")
-
 class LibraryCard(QWidget):
     clicked = pyqtSignal(object)
     menu_action_triggered = pyqtSignal(str, str)
@@ -1198,19 +1153,14 @@ class DownloadDialog(QDialog):
         
         token_path = Path(os.environ.get('LOCALAPPDATA', '')) / 'KirshMangaReader' / 'mangalib_token.json'
         
-                 
-        print(f"DEBUG: token_path = {token_path}")
-        print(f"DEBUG: exists = {token_path.exists()}")
-        
         token = None
         if token_path.exists():
             try:
                 with open(token_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     token = data.get("token", "")
-                print(f"DEBUG: token = {token[:20] if token else 'None'}...")
             except Exception as e:
-                print(f"DEBUG: ошибка чтения: {e}")
+                logging.error(f"Не удалось прочитать токен MangaLib: {e}")
         
         if token:
             self.auth_status_label.setText("✅ Токен есть (можно скачивать 18+)")
@@ -1228,25 +1178,53 @@ class DownloadDialog(QDialog):
             self.auth_button.setEnabled(False)
             self.auth_button.setText("⏳ Открываю браузер...")
             
-            temp_loader = ComXDownloadThread("https://com-x.life", "")
-            temp_loader.auth_via_browser()
+            import threading
+            self._comx_auth_loader = ComXDownloadThread("https://com-x.life", "")
+            self._comx_auth_thread = threading.Thread(
+                target=self._comx_auth_loader.auth_via_browser, daemon=True
+            )
+            self._comx_auth_thread.start()
             
-            self.auth_button.setEnabled(True)
-            self.check_comx_auth_status()
+            self._comx_auth_timer = QTimer(self)
+            self._comx_auth_timer.timeout.connect(self._check_comx_auth_finished)
+            self._comx_auth_timer.start(500)
             
         elif "MangaLib" in site:
             QMessageBox.information(self, "Авторизация MangaLib", 
                 "Откроется браузер.\n\nВойдите в аккаунт на mangalib.me\n\nПосле входа токен будет сохранён автоматически.")
             
-            from selenium import webdriver
-            from selenium.webdriver.chrome.options import Options
-            from selenium.webdriver.chrome.service import Service
-            from webdriver_manager.chrome import ChromeDriverManager
-            import time
-            import json
-            from pathlib import Path
-            import os
+            self.auth_button.setEnabled(False)
+            self.auth_button.setText("⏳ Открываю браузер...")
             
+            import threading
+            self._mangalib_auth_result = {"token": None}
+            self._mangalib_auth_thread = threading.Thread(
+                target=self._mangalib_auth_worker, daemon=True
+            )
+            self._mangalib_auth_thread.start()
+            
+            self._mangalib_auth_timer = QTimer(self)
+            self._mangalib_auth_timer.timeout.connect(self._check_mangalib_auth_finished)
+            self._mangalib_auth_timer.start(500)
+        
+    def _check_comx_auth_finished(self):
+        if self._comx_auth_thread.is_alive():
+            return
+        self._comx_auth_timer.stop()
+        self.auth_button.setEnabled(True)
+        self.check_comx_auth_status()
+        
+    def _mangalib_auth_worker(self):
+        """Выполняется в фоновом потоке — сюда НЕЛЬЗЯ добавлять QMessageBox и другие вызовы интерфейса"""
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.chrome.service import Service
+        from webdriver_manager.chrome import ChromeDriverManager
+        import time
+        
+        token = None
+        driver = None
+        try:
             chrome_options = Options()
             chrome_options.add_argument("--disable-blink-features=AutomationControlled")
             chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
@@ -1255,7 +1233,6 @@ class DownloadDialog(QDialog):
             driver = webdriver.Chrome(service=service, options=chrome_options)
             driver.get("https://mangalib.me")
             
-            token = None
             for i in range(120):
                 time.sleep(1)
                 try:
@@ -1271,21 +1248,37 @@ class DownloadDialog(QDialog):
                     """)
                     if token:
                         break
-                except:
+                except Exception:
                     pass
-            
-            driver.quit()
-            
-            if token:
-                token_path = Path(os.environ.get('LOCALAPPDATA', '')) / 'KirshMangaReader' / 'mangalib_token.json'
-                token_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(token_path, 'w', encoding='utf-8') as f:
-                    json.dump({"token": token}, f)
-                QMessageBox.information(self, "Успех", "Токен сохранён!")
-            else:
-                QMessageBox.warning(self, "Ошибка", "Не удалось получить токен")
-            
-            self.check_mangalib_auth_status()
+        except Exception:
+            token = None
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+        
+        self._mangalib_auth_result["token"] = token
+
+    def _check_mangalib_auth_finished(self):
+        """Выполняется в главном потоке — тут МОЖНО показывать окна и трогать кнопки"""
+        if self._mangalib_auth_thread.is_alive():
+            return
+        self._mangalib_auth_timer.stop()
+        
+        token = self._mangalib_auth_result.get("token")
+        if token:
+            token_path = Path(os.environ.get('LOCALAPPDATA', '')) / 'KirshMangaReader' / 'mangalib_token.json'
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(token_path, 'w', encoding='utf-8') as f:
+                json.dump({"token": token}, f)
+            QMessageBox.information(self, "Успех", "Токен сохранён!")
+        else:
+            QMessageBox.warning(self, "Ошибка", "Не удалось получить токен")
+        
+        self.auth_button.setEnabled(True)
+        self.check_mangalib_auth_status()
     
     def get_data(self):
         site = self.site_combo.currentText()
@@ -1311,7 +1304,7 @@ class MainWindow(QMainWindow):
         }
         self.load_config()
         
-        MangaItem.GLOBAL_CACHE = self.config.get("archive_cache", {})
+        MangaItem.GLOBAL_CACHE = BoundedCache(300, self.config.get("archive_cache", {}))
         self.current_dir = self.config["root_dir"]
 
         self.stacked_widget = QStackedWidget()
@@ -1465,7 +1458,8 @@ class MainWindow(QMainWindow):
                     loaded = json.load(f)
                     for k, v in loaded.items():
                         self.config[k] = v
-            except Exception: pass
+            except Exception as e:
+                logging.error(f"Ошибка: {e}")
 
     def save_config(self):
         self.config["archive_cache"] = MangaItem.GLOBAL_CACHE
@@ -1497,7 +1491,7 @@ class MainWindow(QMainWindow):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             if dlg.rescan_requested: 
                 COVER_CACHE.clear()
-                MangaItem.GLOBAL_CACHE = {}
+                MangaItem.GLOBAL_CACHE = BoundedCache(max_size=300)
             self.config["root_dir"] = dlg.lbl_path.text()
             self.config["theme"] = dlg.combo_theme.currentText()
             self.config["accent"] = dlg.combo_accent.currentText()
@@ -1731,7 +1725,8 @@ class MainWindow(QMainWindow):
                             prog_data = self.config["progress"].get(p, None)
                             if isinstance(prog_data, dict):
                                 total_pages_read += min(prog_data.get("page", 0) + 1, pages_count)
-        except Exception: pass
+        except Exception as e:
+            logging.error(f"Ошибка: {e}")
         return total_pages_read, total_pages_in_folder
 
     def clear_grid(self, grid):
@@ -1783,7 +1778,9 @@ class MainWindow(QMainWindow):
             elif os.path.isdir(item_path):
                 if item.startswith('.'): continue
                 try: sub_files = os.listdir(item_path)
-                except: sub_files = []
+                except Exception as e:
+                    logging.error(f"Не удалось прочитать папку {item_path}: {e}")
+                    sub_files = []
                 
                 has_images = any(f.lower().endswith(VALID_EXTENSIONS) for f in sub_files)
                 has_archives = any(f.lower().endswith(ARCHIVE_EXTENSIONS) for f in sub_files)
@@ -1874,8 +1871,11 @@ class MainWindow(QMainWindow):
                 if col >= max_cols: col = 0; row += 1
         else:
             completed_top_items = set()
-            try: raw_top_items = os.listdir(root)
-            except Exception: pass
+            try:
+                raw_top_items = os.listdir(root)
+            except Exception as e:
+                logging.error(f"Ошибка: {e}")
+                raw_top_items = []
 
             for item in raw_top_items:
                 if item.startswith('.'): continue
@@ -1930,7 +1930,8 @@ class MainWindow(QMainWindow):
                     if manga_files:
                         target_path = natsorted(manga_files)[0]
                         break
-            except: pass
+            except Exception as e:
+                logging.error(f"Ошибка поиска манги в {folder_path}: {e}")
 
         if target_path:
             manga = MangaItem(target_path)
@@ -1944,7 +1945,8 @@ class MainWindow(QMainWindow):
                 for f in files:
                     if f.lower().endswith(ARCHIVE_EXTENSIONS):
                         all_files.append(os.path.join(root, f))
-        except: pass
+        except Exception as e:
+            logging.error(f"Ошибка поиска файлов в {folder_path}: {e}")
 
         if all_files:
             last_file = natsorted(all_files)[-1]
@@ -2144,8 +2146,8 @@ class MainWindow(QMainWindow):
                     with open(token_path, 'r', encoding='utf-8') as f:
                         data = json.load(f)
                         token = data.get("token", "")
-                except:
-                    pass
+                except Exception as e:
+                    logging.error(f"Не удалось прочитать токен MangaLib: {e}")
             self.loader = MangaLibDownloadThread(url, root_dir, token=token, output_format=output_format)
         else:
             self.loader = ComXDownloadThread(url, root_dir, output_format=output_format)
