@@ -3,6 +3,7 @@ import re
 import time
 import json
 import requests
+import logging
 import zipfile
 import shutil
 from pathlib import Path
@@ -71,8 +72,8 @@ class ComXDownloadThread(QThread):
                     for c in cookies:
                         self.session.cookies.set(c['name'], c['value'])
                 return True
-            except:
-                pass
+            except Exception as e:
+                logging.error(f"Не удалось загрузить куки Com-X: {e}")
         return False
     
     def auth_via_browser(self):
@@ -96,8 +97,8 @@ class ComXDownloadThread(QThread):
                 f.write(f"frozen: {getattr(sys, 'frozen', False)}\n")
                 f.write(f"executable: {sys.executable}\n")
                 f.write(f"log_dir: {log_dir}\n")
-        except:
-            pass
+        except Exception as e:
+            logging.error(f"Не удалось создать auth_debug.log: {e}")
         
         driver = None
         
@@ -140,6 +141,7 @@ class ComXDownloadThread(QThread):
             self.status.emit("Войдите в аккаунт в браузере. Программа ждёт...")
             
             cookies = None
+            cookies = None
             for i in range(120):
                 time.sleep(1)
                 try:
@@ -149,8 +151,8 @@ class ComXDownloadThread(QThread):
                         with open(log_file, 'a', encoding='utf-8') as f:
                             f.write(f"Авторизация на {i} секунде\n")
                         break
-                except:
-                    pass
+                except Exception as e:
+                    logging.debug(f"Проверка куки не удалась (это нормально во время ожидания): {e}")
                 if i % 10 == 0 and i > 0:
                     self.status.emit(f"Ожидание входа... {i} сек")
             else:
@@ -190,8 +192,8 @@ class ComXDownloadThread(QThread):
             if driver:
                 try:
                     driver.quit()
-                except:
-                    pass
+                except Exception as e:
+                    logging.error(f"Ошибка при закрытии браузера: {e}")
             
             self._cookies_loaded = False
             return False
@@ -260,8 +262,16 @@ class ComXDownloadThread(QThread):
             if not self._load_cookies():
                 self.status.emit("Куки не найдены. Требуется авторизация.")
                 self.need_auth.emit()
+                
+                max_wait_seconds = 180  # 3 минуты максимум на всю авторизацию
+                waited_seconds = 0
                 while not self._cookies_loaded:
                     time.sleep(0.5)
+                    waited_seconds += 0.5
+                    if waited_seconds >= max_wait_seconds:
+                        self.error.emit("Время ожидания авторизации истекло. Попробуйте снова.")
+                        return
+                
                 if not self._cookies_loaded:
                     self.error.emit("Авторизация не выполнена")
                     return
@@ -301,7 +311,9 @@ class ComXDownloadThread(QThread):
             total = len(chapters)
             for i, ch in enumerate(chapters, 1):
                 self.progress.emit(i, total, ch.get('title', f"Глава {ch.get('posi', 0)}"))
-                self.status.emit(f"Скачивание: {ch.get('title', f'Глава {ch.get('posi', 0)}')}")
+                default_chapter_title = f"Глава {ch.get('posi', 0)}"
+                chapter_title = ch.get('title', default_chapter_title)
+                self.status.emit(f"Скачивание: {chapter_title}")
                 
                 api_url = "https://com-x.life/engine/ajax/controller.php?mod=api&action=chapters/download"
                 resp = self.session.post(api_url, 

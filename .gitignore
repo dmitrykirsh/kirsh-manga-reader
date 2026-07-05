@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.spec
+
+# Логи
+*.log
+auth_debug.log
+run_debug.log
+
+# Временные файлы
+*.tmp
+*.temp
+*.cache
+
+# PyInstaller
+*.pkg
+*.toc
+*.pyz
+base_library.zip
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Windows
+Thumbs.db
+desktop.ini__pycache__/ 
+*.pyc 
+*.log 
+build/ 
+dist/ 
+*.spec 
+releases/ 
