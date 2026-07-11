@@ -82,6 +82,7 @@ class InfoPage(QWidget):
     status_rating_changed = pyqtSignal(str, str)
     volume_selected = pyqtSignal(str)
     chapter_selected = pyqtSignal(str, str)
+    read_file_requested = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -264,14 +265,15 @@ class InfoPage(QWidget):
 
             if entry["chapters"] and not is_internal:
                 # Внешние главы-файлы (Hellsing/Berserk/Tokyo Ghoul-re): раскрывающийся том,
-                # дети — отдельные файлы глав.
+                # дети — отдельные файлы глав. Клик по главе открывает читалку сразу
+                # (kind="read"), а не страницу информации — это конечная единица чтения.
                 parent_item = QTreeWidgetItem([label])
                 parent_item.setData(0, Qt.ItemDataRole.UserRole, None)
                 expand_this = False
                 for ch_name, ch_path in entry["chapters"]:
                     is_current = ch_path == current_path
                     child = QTreeWidgetItem([f"▶ {ch_name}" if is_current else ch_name])
-                    child.setData(0, Qt.ItemDataRole.UserRole, ("volume", ch_path))
+                    child.setData(0, Qt.ItemDataRole.UserRole, ("read", ch_path))
                     parent_item.addChild(child)
                     if is_current:
                         expand_this = True
@@ -310,6 +312,8 @@ class InfoPage(QWidget):
         elif kind == "chapter":
             volume_path, chapter_name = payload
             self.chapter_selected.emit(volume_path, chapter_name)
+        elif kind == "read":
+            self.read_file_requested.emit(payload)
 
     def _populate_local_chapters(self):
         self.local_chapters_list.clear()

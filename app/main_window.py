@@ -212,6 +212,7 @@ class MainWindow(QMainWindow):
         self.info_page.status_rating_changed.connect(self.handle_info_page_status_rating)
         self.info_page.volume_selected.connect(self.handle_info_volume_selected)
         self.info_page.chapter_selected.connect(self.handle_info_chapter_selected)
+        self.info_page.read_file_requested.connect(self.handle_info_read_file_requested)
 
         self.stacked_widget.addWidget(self.main_library_page)
         self.stacked_widget.addWidget(self.reader_page)
@@ -1564,6 +1565,15 @@ class MainWindow(QMainWindow):
             self.open_manga_info(manga_item)
         else:
             QMessageBox.warning(self, "Ошибка", "Не удалось открыть выбранный том")
+
+    def handle_info_read_file_requested(self, path):
+        """Клик по конечной главе-файлу (Hellsing/Berserk-стиль) — открывает читалку
+        сразу, а не страницу информации, в отличие от клика по тому."""
+        manga_item = MangaItem(path)
+        if manga_item.pages:
+            self.open_manga(manga_item)
+        else:
+            QMessageBox.warning(self, "Ошибка", "Не удалось открыть выбранную главу")
 
     def handle_info_chapter_selected(self, manga_path, chapter_name):
         manga = MangaItem(manga_path)
