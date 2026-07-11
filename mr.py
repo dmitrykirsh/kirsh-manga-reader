@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
     QDialog, QMenu, QMessageBox, QComboBox, QTabBar,
     QGraphicsView, QGraphicsScene, QSlider, QInputDialog, QTabWidget, QLineEdit, QListWidget)
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QAction, QIcon
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QThread
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QThread, QEvent
 from mangalib_downloader import MangaLibDownloadThread
 from comx_downloader import ComXDownloadThread
 
@@ -56,7 +56,6 @@ else:
 USER_DATA_DIR = os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~\\AppData\\Local')), 'KirshMangaReader')
 os.makedirs(USER_DATA_DIR, exist_ok=True)
 
-import logging
 LOG_PATH = os.path.join(USER_DATA_DIR, "app.log")
 logging.basicConfig(
     filename=LOG_PATH,
@@ -92,6 +91,16 @@ except ImportError:
 
 VALID_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp', '.bmp')
 ARCHIVE_EXTENSIONS = ('.zip', '.cbz', '.rar', '.cbr')
+
+APP_VERSION = "2.1"
+GITHUB_REPO = "dmitrykirsh/kirsh-manga-reader"
+
+
+def is_newer_version(remote_version, local_version):
+    """Сравнивает версии вида '2.0.10' по числовым сегментам (не как строки)."""
+    def parts(v):
+        return tuple(int(p) for p in re.findall(r'\d+', v))
+    return parts(remote_version) > parts(local_version)
 
 from collections import OrderedDict
 
@@ -825,6 +834,7 @@ class LibraryCard(QWidget):
         act_cover = QAction("🖼 Изменить обложку", self)
         act_rem_cover = QAction("🗑 Удалить свою обложку", self)
         act_open_folder = QAction("📂 Открыть в проводнике", self)
+        act_rename = QAction("✏️ Переименовать", self)
         act_del = QAction("❌ Удалить с устройства", self)
         
         act_reset.triggered.connect(lambda: self.menu_action_triggered.emit("reset", self.manga_item.path))
@@ -832,6 +842,7 @@ class LibraryCard(QWidget):
         act_cover.triggered.connect(lambda: self.menu_action_triggered.emit("change_cover", self.manga_item.path))
         act_rem_cover.triggered.connect(lambda: self.menu_action_triggered.emit("remove_cover", self.manga_item.path))
         act_open_folder.triggered.connect(lambda: self.menu_action_triggered.emit("open_folder", self.manga_item.path))
+        act_rename.triggered.connect(lambda: self.menu_action_triggered.emit("rename", self.manga_item.path))
         act_del.triggered.connect(lambda: self.menu_action_triggered.emit("delete", self.manga_item.path))
         
         menu.addAction(act_reset)
@@ -841,6 +852,7 @@ class LibraryCard(QWidget):
         menu.addAction(act_rem_cover)
         menu.addSeparator()
         menu.addAction(act_open_folder)
+        menu.addAction(act_rename)
         menu.addSeparator()
         menu.addAction(act_del)
         menu.exec(self.mapToGlobal(pos))
@@ -922,6 +934,7 @@ class LibraryFolderCard(QWidget):
         act_cover = QAction("🖼 Изменить обложку", self)
         act_rem_cover = QAction("🗑 Удалить свою обложку", self)
         act_open_folder = QAction("📂 Открыть в проводнике", self)
+        act_rename = QAction("✏️ Переименовать папку", self)
         act_del = QAction("❌ Удалить папку с устройства", self)
         
         act_reset.triggered.connect(lambda: self.menu_action_triggered.emit("reset", self.folder_path))
@@ -929,6 +942,7 @@ class LibraryFolderCard(QWidget):
         act_cover.triggered.connect(lambda: self.menu_action_triggered.emit("change_cover", self.folder_path))
         act_rem_cover.triggered.connect(lambda: self.menu_action_triggered.emit("remove_cover", self.folder_path))
         act_open_folder.triggered.connect(lambda: self.menu_action_triggered.emit("open_folder", self.folder_path))
+        act_rename.triggered.connect(lambda: self.menu_action_triggered.emit("rename", self.folder_path))
         act_del.triggered.connect(lambda: self.menu_action_triggered.emit("delete", self.folder_path))
         
         menu.addAction(act_reset)
@@ -938,6 +952,7 @@ class LibraryFolderCard(QWidget):
         menu.addAction(act_rem_cover)
         menu.addSeparator()
         menu.addAction(act_open_folder)
+        menu.addAction(act_rename)
         menu.addSeparator()
         menu.addAction(act_del)
         menu.exec(self.mapToGlobal(pos))
@@ -946,7 +961,7 @@ class SettingsDialog(QDialog):
     def __init__(self, parent, current_root, current_theme, current_accent):
         super().__init__(parent)
         self.setWindowTitle("Настройки")
-        self.setFixedSize(480, 420)
+        self.setFixedSize(480, 560)
         self.rescan_requested = False
         
         main_layout = QVBoxLayout(self)
@@ -959,7 +974,7 @@ class SettingsDialog(QDialog):
         lbl_app_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #ff9800;")
         lbl_app_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
-        lbl_app_version = QLabel("Версия: 2.0")
+        lbl_app_version = QLabel(f"Версия: {APP_VERSION}")
         lbl_app_version.setStyleSheet("font-size: 12px; color: #888888; margin-bottom: 10px;")
         lbl_app_version.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
@@ -990,12 +1005,29 @@ class SettingsDialog(QDialog):
         self.combo_accent.addItems(["Розовый", "Оранжевый", "Синий", "Зелёный", "Красный", "Фиолетовый"])
         self.combo_accent.setCurrentText(current_accent)
         gen_layout.addWidget(self.combo_accent)
-        
+        gen_layout.addSpacing(15)
+
+        gen_layout.addWidget(QLabel("Обновления:"))
+        btn_check_update = QPushButton("🔄 Проверить обновления")
+        btn_check_update.clicked.connect(lambda: self.parent().check_for_updates(manual=True))
+        gen_layout.addWidget(btn_check_update)
+        gen_layout.addSpacing(15)
+
+        gen_layout.addWidget(QLabel("Прогресс чтения:"))
+        progress_btns_layout = QHBoxLayout()
+        btn_export_progress = QPushButton("📤 Экспорт")
+        btn_export_progress.clicked.connect(lambda: self.parent().export_progress())
+        btn_import_progress = QPushButton("📥 Импорт")
+        btn_import_progress.clicked.connect(lambda: self.parent().import_progress())
+        progress_btns_layout.addWidget(btn_export_progress)
+        progress_btns_layout.addWidget(btn_import_progress)
+        gen_layout.addLayout(progress_btns_layout)
+
         tab_help = QWidget()
         help_layout = QVBoxLayout(tab_help)
         
         help_text = QLabel(
-            "<b>Kirsh Manga Reader v2.0</b><br><br>"
+            "<b>Kirsh Manga Reader</b><br><br>"
             "<b>📖 Чтение манги:</b><br>"
             "• Стрелки влево/вправо или Колесико — Листать страницы<br>"
             "• <b>Ctrl + Колесико</b> — Изменение масштаба страницы<br>"
@@ -1216,23 +1248,16 @@ class DownloadDialog(QDialog):
         
     def _mangalib_auth_worker(self):
         """Выполняется в фоновом потоке — сюда НЕЛЬЗЯ добавлять QMessageBox и другие вызовы интерфейса"""
-        from selenium import webdriver
-        from selenium.webdriver.chrome.options import Options
-        from selenium.webdriver.chrome.service import Service
-        from webdriver_manager.chrome import ChromeDriverManager
+        from browser_driver import launch_authenticated_browser
         import time
-        
+
         token = None
         driver = None
         try:
-            chrome_options = Options()
-            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            
-            service = Service(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=chrome_options)
+            driver, browser_name = launch_authenticated_browser()
+            logging.info(f"Авторизация MangaLib через {browser_name}")
             driver.get("https://mangalib.me")
-            
+
             for i in range(120):
                 time.sleep(1)
                 try:
@@ -1289,7 +1314,7 @@ class DownloadDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Kirsh Manga Reader v2.0")
+        self.setWindowTitle("Kirsh Manga Reader")
         
                                      
         icon_path = os.path.join(DATA_DIR, "icon.ico")
@@ -1315,16 +1340,18 @@ class MainWindow(QMainWindow):
         main_lib_layout.setContentsMargins(15, 15, 15, 15)
 
         top_bar = QHBoxLayout()
+        
+        # Кнопка "На уровень вверх" (слева)
         self.btn_lib_back = QPushButton("← На уровень вверх")
         self.btn_lib_back.setStyleSheet("padding: 8px 16px; font-weight: bold; border-radius: 4px;")
         self.btn_lib_back.clicked.connect(self.navigate_up)
         self.btn_lib_back.hide()
         top_bar.addWidget(self.btn_lib_back)
-        
-                                                           
+
+        # РАСТЯГИВАЕМ ВСЁ ВЛЕВО, ЧТОБЫ СЛАЙДЕР, ПОИСК И КНОПКИ БЫЛИ СПРАВА
         top_bar.addStretch()
-        
-                          
+
+        # СЛАЙДЕР РАЗМЕРА
         top_bar.addWidget(QLabel("Размер:"))
         self.card_width_slider = QSlider(Qt.Orientation.Horizontal)
         self.card_width_slider.setRange(150, 350)
@@ -1332,11 +1359,50 @@ class MainWindow(QMainWindow):
         self.card_width_slider.setFixedWidth(150)
         self.card_width_slider.valueChanged.connect(self.on_card_width_changed)
         top_bar.addWidget(self.card_width_slider)
-        
-                                                       
         top_bar.addSpacing(15)
-        
-                                    
+
+        # ПОИСК (между слайдером размера и кнопкой загрузки).
+        # Строка поиска и кнопка 🔍/✕ лежат прямо в top_bar, без обёртки.
+        # Ширина self.search_input переключается через setFixedWidth(0/300)
+        # (а не через min/max + Expanding-политику — так поведение
+        # предсказуемо и не "уезжает" дальше, чем на реальную ширину поля).
+        # Так как слайдер и весь этот блок стоят ПОСЛЕ единственного
+        # addStretch(), при раскрытии поиска резинка сжимается ровно на
+        # ширину раскрывшегося поля — и слайдер сдвигается влево ровно на
+        # эту же величину (как и было задумано изначально).
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("🔍 Поиск манги...")
+        self.search_input.setStyleSheet("""
+            QLineEdit {
+                padding: 6px 12px;
+                border: 2px solid #444;
+                border-radius: 6px;
+                background-color: #2a2a2a;
+                color: white;
+            }
+            QLineEdit:focus {
+                border: 2px solid #ff9800;
+            }
+        """)
+        self.search_input.textChanged.connect(self.on_search_changed)
+        self.search_input.setVisible(False)
+        self.search_input.setFixedHeight(36)
+        self.search_input.setFixedWidth(0)
+        self.search_input.installEventFilter(self)
+        top_bar.addWidget(self.search_input)
+        top_bar.addSpacing(4)
+
+        self.btn_search = QPushButton("🔍")
+        self.btn_search.setFixedSize(36, 36)
+        self.btn_search.setStyleSheet("font-size: 18px; border-radius: 4px;")
+        self.btn_search.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_search.setToolTip("Показать строку поиска")
+        self.btn_search.setCheckable(True)
+        self.btn_search.clicked.connect(self.toggle_search_input)
+        top_bar.addWidget(self.btn_search)
+        top_bar.addSpacing(8)
+
+        # КНОПКИ СПРАВА
         self.btn_download = QPushButton("📥")
         self.btn_download.setFixedSize(36, 36)
         self.btn_download.setStyleSheet("font-size: 18px; border-radius: 4px;")
@@ -1345,10 +1411,8 @@ class MainWindow(QMainWindow):
         self.btn_download.clicked.connect(self.show_download_dialog)
         top_bar.addWidget(self.btn_download)
         
-                                          
         top_bar.addSpacing(8)
         
-                                  
         self.btn_settings = QPushButton("⚙")
         self.btn_settings.setFixedSize(36, 36)
         self.btn_settings.setStyleSheet("font-size: 18px; border-radius: 4px;")
@@ -1357,7 +1421,6 @@ class MainWindow(QMainWindow):
         self.btn_settings.clicked.connect(self.open_settings)
         top_bar.addWidget(self.btn_settings)
         
-                                     
         top_bar.addSpacing(10)
         
         main_lib_layout.addLayout(top_bar)
@@ -1394,8 +1457,12 @@ class MainWindow(QMainWindow):
         self.tab_stack.addWidget(self.scroll_all)
         self.tab_stack.addWidget(self.scroll_reading)
         self.tab_stack.addWidget(self.scroll_done)
-        
-                                                                                         
+
+        # Полный список карточек текущей папки библиотеки (не зависит от того,
+        # что сейчас реально лежит в self.grid_all — нужен для поиска).
+        self.library_widgets = []
+        self.search_empty_label = None
+
         main_lib_layout.addWidget(self.tab_stack, 1)
 
         self.empty_btn = QPushButton("Библиотека пуста.\nНажмите сюда, чтобы указать папку с мангой в настройках.")
@@ -1422,7 +1489,9 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(50, lambda: self.scan_library(self.current_dir))
         else:
             QTimer.singleShot(50, lambda: self.scan_library(""))
-    
+
+        QTimer.singleShot(2000, lambda: self.check_for_updates(manual=False))
+
     def handle_comx_auth(self):
         """Обработка авторизации для Com-X (вызывается в главном потоке)"""
                                                                       
@@ -1468,11 +1537,16 @@ class MainWindow(QMainWindow):
 
     def on_card_width_changed(self, value):
         self.config["card_width"] = value
-        for grid in [self.grid_all, self.grid_reading, self.grid_done]:
+        for grid in [self.grid_reading, self.grid_done]:
             for i in range(grid.count()):
                 widget = grid.itemAt(i).widget()
                 if widget and hasattr(widget, 'update_size'):
                     widget.update_size(value)
+        # self.library_widgets содержит ВСЕ карточки библиотеки, включая
+        # скрытые фильтром поиска (их сейчас нет в self.grid_all).
+        for widget in self.library_widgets:
+            if hasattr(widget, 'update_size'):
+                widget.update_size(value)
         self.save_config()
         self.refresh_grid_layout()
 
@@ -1498,7 +1572,164 @@ class MainWindow(QMainWindow):
             self.current_dir = dlg.lbl_path.text()
             self.save_config()
             self.apply_theme()
-            self.scan_library(self.current_dir) 
+            self.scan_library(self.current_dir)
+
+    def check_for_updates(self, manual=False):
+        if getattr(self, "_update_check_thread", None) and self._update_check_thread.is_alive():
+            return
+
+        import datetime
+        if not manual:
+            last_check = self.config.get("last_update_check", "")
+            if last_check == datetime.date.today().isoformat():
+                return
+
+        import threading
+        self._update_check_manual = manual
+        self._update_check_result = {"version": None, "url": None, "error": None}
+        self._update_check_thread = threading.Thread(target=self._update_check_worker, daemon=True)
+        self._update_check_thread.start()
+
+        self._update_check_timer = QTimer(self)
+        self._update_check_timer.timeout.connect(self._poll_update_check)
+        self._update_check_timer.start(300)
+
+    def _update_check_worker(self):
+        """Выполняется в фоновом потоке — сюда НЕЛЬЗЯ добавлять QMessageBox и другие вызовы интерфейса"""
+        result = {"version": None, "url": None, "error": None}
+        try:
+            resp = requests.get(
+                f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+                timeout=6, headers={"Accept": "application/vnd.github+json"}
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                tag = (data.get("tag_name") or "").lstrip("vV")
+                if tag and is_newer_version(tag, APP_VERSION):
+                    result["version"] = tag
+                    result["url"] = data.get("html_url") or f"https://github.com/{GITHUB_REPO}/releases/latest"
+            # Не-200 (например 404 — релизов ещё нет, или лимит запросов GitHub API)
+            # тихо считаем "обновлений нет", без ошибки для пользователя.
+        except Exception as e:
+            result["error"] = str(e)
+            logging.warning(f"Не удалось проверить обновления: {e}")
+        self._update_check_result = result
+
+    def _poll_update_check(self):
+        if self._update_check_thread.is_alive():
+            return
+        self._update_check_timer.stop()
+
+        import datetime
+        result = self._update_check_result
+        self.config["last_update_check"] = datetime.date.today().isoformat()
+        self.save_config()
+
+        if result["version"]:
+            reply = QMessageBox.question(
+                self, "Доступно обновление",
+                f"Доступна новая версия {result['version']} (у вас {APP_VERSION}).\n\nОткрыть страницу релиза?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                import webbrowser
+                webbrowser.open(result["url"])
+        elif self._update_check_manual:
+            if result["error"]:
+                QMessageBox.warning(self, "Проверка обновлений", "Не удалось проверить обновления. Проверьте подключение к интернету.")
+            else:
+                QMessageBox.information(self, "Проверка обновлений", f"У вас установлена последняя версия ({APP_VERSION}).")
+
+    def export_progress(self):
+        if not self.config.get("root_dir"):
+            QMessageBox.warning(self, "Ошибка", "Сначала укажите корневую папку в настройках")
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Экспорт прогресса чтения", "kirsh_manga_progress.json", "JSON (*.json)"
+        )
+        if not file_path:
+            return
+
+        root = self.config["root_dir"]
+        exported = {}
+        for path, data in self.config["progress"].items():
+            try:
+                rel = os.path.relpath(path, root)
+            except ValueError:
+                continue
+            if rel.startswith(".."):
+                continue
+            exported[rel] = data
+
+        payload = {"app": "KirshMangaReader", "format_version": 1, "progress": exported}
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+            QMessageBox.information(self, "Экспорт завершён", f"Экспортировано записей: {len(exported)}")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить файл:\n{e}")
+
+    def import_progress(self):
+        if not self.config.get("root_dir"):
+            QMessageBox.warning(self, "Ошибка", "Сначала укажите корневую папку в настройках")
+            return
+
+        file_path, _ = QFileDialog.getOpenFileName(self, "Импорт прогресса чтения", "", "JSON (*.json)")
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                payload = json.load(f)
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось прочитать файл:\n{e}")
+            return
+
+        imported = payload.get("progress") if isinstance(payload, dict) else None
+        if not isinstance(imported, dict):
+            QMessageBox.critical(self, "Ошибка", "Файл не похож на экспорт прогресса Kirsh Manga Reader.")
+            return
+
+        root = self.config["root_dir"]
+        resolved = {}
+        missing = 0
+        for rel, data in imported.items():
+            abs_path = os.path.normpath(os.path.join(root, rel))
+            if os.path.exists(abs_path):
+                resolved[abs_path] = data
+            else:
+                missing += 1
+
+        if not resolved:
+            QMessageBox.warning(self, "Импорт прогресса", "Ни один путь из файла не найден в текущей библиотеке.")
+            return
+
+        overlap = sum(1 for p in resolved if p in self.config["progress"])
+        mode = "merge"
+        if overlap:
+            reply = QMessageBox.question(
+                self, "Импорт прогресса",
+                f"Для {overlap} элементов уже есть сохранённый прогресс на этом устройстве.\n\n"
+                "Заменить его данными из файла (Да) или оставить существующий и добавить только новое (Нет)?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            mode = "replace" if reply == QMessageBox.StandardButton.Yes else "merge"
+
+        added = 0
+        for p, data in resolved.items():
+            if p in self.config["progress"] and mode == "merge":
+                continue
+            self.config["progress"][p] = data
+            added += 1
+
+        self.save_config()
+        self.scan_library(self.current_dir)
+
+        msg = f"Импортировано записей: {added}."
+        if missing:
+            msg += f"\nНе найдено на диске и пропущено: {missing}."
+        QMessageBox.information(self, "Импорт завершён", msg)
 
     def apply_theme(self):
         theme = self.config.get("theme", "Тёмная")
@@ -1671,7 +1902,18 @@ class MainWindow(QMainWindow):
             col += 1
             if col >= max_cols: col = 0; row += 1
 
+    def eventFilter(self, obj, event):
+        if obj == self.search_input and event.type() == QEvent.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Escape and self.search_input.isVisible():
+                self.toggle_search_input(False)
+                return True
+        return super().eventFilter(obj, event)
+
     def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape and self.search_input.isVisible():
+            self.toggle_search_input(False)
+            event.accept()
+            return
         if event.key() == Qt.Key.Key_F11:
             if self.isFullScreen(): self.showNormal()
             else: self.showFullScreen()
@@ -1692,10 +1934,96 @@ class MainWindow(QMainWindow):
             self.scan_library(os.path.dirname(self.current_dir))
 
     def handle_tab_changed(self, index):
-        self.tab_stack.setCurrentIndex(index)
-        if index == 0: self.scan_library(self.current_dir)
-        elif index == 1: self.build_flat_tab("reading")
-        elif index == 2: self.build_flat_tab("done")
+        if self.search_input.isVisible():
+            self.custom_tab_bar.blockSignals(True)
+            self.custom_tab_bar.setCurrentIndex(0)
+            self.custom_tab_bar.blockSignals(False)
+            self.tab_stack.setCurrentIndex(0)
+            return
+
+        if index == 0:
+            self.tab_stack.setCurrentIndex(0)
+            self.scan_library(self.current_dir)
+        elif index == 1:
+            self.tab_stack.setCurrentIndex(1)
+            self.build_flat_tab("reading")
+        elif index == 2:
+            self.tab_stack.setCurrentIndex(2)
+            self.build_flat_tab("done")
+
+    def toggle_search_input(self, visible=None):
+        if visible is None:
+            visible = not self.search_input.isVisible()
+
+        self.btn_search.setChecked(visible)
+        self.btn_search.setText("✕" if visible else "🔍")
+        self.btn_search.setToolTip("Закрыть поиск" if visible else "Показать строку поиска")
+
+        if visible:
+            self.stacked_widget.setCurrentWidget(self.main_library_page)
+            if self.custom_tab_bar.currentIndex() != 0:
+                self.custom_tab_bar.blockSignals(True)
+                self.custom_tab_bar.setCurrentIndex(0)
+                self.custom_tab_bar.blockSignals(False)
+                self.tab_stack.setCurrentIndex(0)
+            self.search_input.setFixedWidth(300)
+            self.search_input.setVisible(True)
+            self.search_input.setFocus()
+        else:
+            self.search_input.blockSignals(True)
+            self.search_input.clear()
+            self.search_input.blockSignals(False)
+            self.search_input.setFixedWidth(0)
+            self.search_input.setVisible(False)
+            self.apply_library_filter("")
+
+    def get_card_title(self, widget):
+        """Возвращает полное (не обрезанное эллипсисом) название карточки для поиска."""
+        manga_item = getattr(widget, 'manga_item', None)
+        if manga_item is not None:
+            return manga_item.display_name.lower()
+        display_name = getattr(widget, 'display_name', None)
+        if display_name is not None:
+            return display_name.lower()
+        return ""
+
+    def apply_library_filter(self, text):
+        """Фильтрует вкладку "Библиотека" по тексту.
+
+        Всегда фильтрует полный список self.library_widgets, а не то, что
+        сейчас лежит в self.grid_all — иначе после сужения результата
+        стёртые из сетки карточки было бы уже не вернуть.
+        """
+        text = text.lower().strip()
+
+        if self.search_empty_label is not None:
+            self.grid_all.removeWidget(self.search_empty_label)
+            self.search_empty_label.deleteLater()
+            self.search_empty_label = None
+
+        for widget in self.library_widgets:
+            self.grid_all.removeWidget(widget)
+
+        row, col = 0, 0
+        max_cols = self.get_max_columns()
+        matched_count = 0
+        for widget in self.library_widgets:
+            if text and text not in self.get_card_title(widget):
+                widget.setVisible(False)
+                continue
+            widget.setVisible(True)
+            self.grid_all.addWidget(widget, row, col)
+            col += 1
+            if col >= max_cols:
+                col = 0
+                row += 1
+            matched_count += 1
+
+        if text and matched_count == 0:
+            self.search_empty_label = QLabel("Ничего не найдено для этого запроса")
+            self.search_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.search_empty_label.setStyleSheet("color: #888; font-size: 16px; font-weight: bold;")
+            self.grid_all.addWidget(self.search_empty_label, 0, 0)
 
     def calculate_folder_progress(self, folder_path):
         total_pages_in_folder = 0
@@ -1730,9 +2058,12 @@ class MainWindow(QMainWindow):
         return total_pages_read, total_pages_in_folder
 
     def clear_grid(self, grid):
-        for i in reversed(range(grid.count())): 
+        if grid == self.grid_all:
+            self.search_empty_label = None
+        for i in reversed(range(grid.count())):
             w = grid.itemAt(i).widget()
-            if w: w.deleteLater()
+            if w:
+                w.deleteLater()
 
     def show_empty_state(self, grid, message="Тут пока пусто"):
         self.clear_grid(grid)
@@ -1752,14 +2083,18 @@ class MainWindow(QMainWindow):
         self.current_dir = target_dir
         self.btn_lib_back.setVisible(self.current_dir != self.config["root_dir"])
         self.clear_grid(self.grid_all)
+        self.library_widgets = []
 
         if not target_dir or not os.path.exists(target_dir):
             self.tab_stack.hide()
             self.empty_btn.show()
             return
 
-        try: raw_items = os.listdir(target_dir)
-        except Exception: raw_items = []
+        try: 
+            raw_items = os.listdir(target_dir)
+        except Exception as e:
+            logging.error(f"Ошибка чтения папки {target_dir}: {e}")
+            raw_items = []
 
         row, col = 0, 0
         max_cols = self.get_max_columns()
@@ -1773,15 +2108,17 @@ class MainWindow(QMainWindow):
                 if manga.pages:
                     card = self.create_manga_card(manga)
                     self.grid_all.addWidget(card, row, col)
+                    self.library_widgets.append(card)
                     col += 1
                     has_items = True
             elif os.path.isdir(item_path):
                 if item.startswith('.'): continue
-                try: sub_files = os.listdir(item_path)
+                try:
+                    sub_files = os.listdir(item_path)
                 except Exception as e:
                     logging.error(f"Не удалось прочитать папку {item_path}: {e}")
                     sub_files = []
-                
+
                 has_images = any(f.lower().endswith(VALID_EXTENSIONS) for f in sub_files)
                 has_archives = any(f.lower().endswith(ARCHIVE_EXTENSIONS) for f in sub_files)
                 has_subdirs = any(os.path.isdir(os.path.join(item_path, d)) for d in sub_files)
@@ -1791,6 +2128,7 @@ class MainWindow(QMainWindow):
                     if manga.pages:
                         card = self.create_manga_card(manga)
                         self.grid_all.addWidget(card, row, col)
+                        self.library_widgets.append(card)
                         col += 1
                         has_items = True
                 else:
@@ -1799,10 +2137,13 @@ class MainWindow(QMainWindow):
                     f_card.clicked.connect(self.scan_library)
                     f_card.menu_action_triggered.connect(self.handle_menu_action)
                     self.grid_all.addWidget(f_card, row, col)
+                    self.library_widgets.append(f_card)
                     col += 1
                     has_items = True
 
-            if col >= max_cols: col = 0; row += 1
+            if col >= max_cols:
+                col = 0
+                row += 1
 
         if not has_items:
             if target_dir == self.config["root_dir"]:
@@ -1815,6 +2156,55 @@ class MainWindow(QMainWindow):
         else:
             self.empty_btn.hide()
             self.tab_stack.show()
+
+        if self.search_input.isVisible():
+            self.apply_library_filter(self.search_input.text())
+
+    def on_search_changed(self, text):
+        self.apply_library_filter(text)
+
+    def rename_item(self, path):
+        """Переименовывает папку или файл манги"""
+        old_name = os.path.basename(path)
+        new_name, ok = QInputDialog.getText(
+            self, 
+            "Переименовать", 
+            f"Введите новое имя для:\n{old_name}",
+            text=old_name
+        )
+        
+        if not ok or not new_name.strip():
+            return
+        
+        new_name = new_name.strip()
+        for char in r'<>:"/\|?*':
+            new_name = new_name.replace(char, '_')
+        
+        if new_name == old_name:
+            return
+        
+        parent_dir = os.path.dirname(path)
+        new_path = os.path.join(parent_dir, new_name)
+        
+        if os.path.exists(new_path):
+            QMessageBox.warning(self, "Ошибка", f"Файл или папка с именем '{new_name}' уже существует!")
+            return
+        
+        try:
+            os.rename(path, new_path)
+
+            if path in self.config["progress"]:
+                self.config["progress"][new_path] = self.config["progress"].pop(path)
+            if path in COVER_CACHE:
+                COVER_CACHE[new_path] = COVER_CACHE.pop(path)
+            if path in MangaItem.GLOBAL_CACHE:
+                MangaItem.GLOBAL_CACHE[new_path] = MangaItem.GLOBAL_CACHE.pop(path)
+            
+            self.save_config()
+            self.scan_library(self.current_dir)
+            QMessageBox.information(self, "Успех", f"Переименовано в:\n{new_name}")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось переименовать:\n{str(e)}")
 
     def create_manga_card(self, manga, custom_handler=None):
         prog = self.config["progress"].get(manga.path, {})
@@ -1977,6 +2367,8 @@ class MainWindow(QMainWindow):
             self.scan_library(self.current_dir)
         elif action_type == "open_folder":                        
             self.open_in_explorer(item_path)
+        elif action_type == "rename":
+            self.rename_item(item_path)
         elif action_type == "delete":
             self.delete_item_from_device(item_path)
             self.scan_library(self.current_dir)

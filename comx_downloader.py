@@ -8,24 +8,6 @@ import zipfile
 import shutil
 from pathlib import Path
 from PyQt6.QtCore import QThread, pyqtSignal
-from selenium.webdriver.chrome.webdriver import WebDriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-
-
-def get_driver_path():
-    """Возвращает путь к chromedriver.exe"""
-    import sys
-    
-    if getattr(sys, 'frozen', False):
-        base_path = os.path.dirname(sys.executable)
-    else:
-        base_path = os.path.dirname(os.path.abspath(__file__))
-    
-    local_driver = os.path.join(base_path, "chromedriver.exe")
-    if os.path.exists(local_driver):
-        return local_driver
-    return None
 
 
 class ComXDownloadThread(QThread):
@@ -80,17 +62,14 @@ class ComXDownloadThread(QThread):
         import sys
         import os
         import traceback
-        from selenium import webdriver
-        from selenium.webdriver.chrome.options import Options
-        from selenium.webdriver.chrome.service import Service
-        from selenium.webdriver.chrome.webdriver import WebDriver
-        
+        from browser_driver import launch_authenticated_browser
+
         if getattr(sys, 'frozen', False):
             log_dir = os.path.dirname(sys.executable)
         else:
             log_dir = os.path.dirname(os.path.abspath(__file__))
         log_file = os.path.join(log_dir, "auth_debug.log")
-        
+
         try:
             with open(log_file, 'w', encoding='utf-8') as f:
                 f.write("=== auth_via_browser START ===\n")
@@ -99,43 +78,17 @@ class ComXDownloadThread(QThread):
                 f.write(f"log_dir: {log_dir}\n")
         except Exception as e:
             logging.error(f"Не удалось создать auth_debug.log: {e}")
-        
+
         driver = None
-        
+
         try:
             self.status.emit("Открываю браузер для авторизации...")
-            
-            chrome_options = Options()
-            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            chrome_options.add_experimental_option('useAutomationExtension', False)
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            
-            driver_path = get_driver_path()
-            
+
+            driver, browser_name = launch_authenticated_browser()
+
             with open(log_file, 'a', encoding='utf-8') as f:
-                f.write(f"driver_path: {driver_path}\n")
-            
-            if driver_path and os.path.exists(driver_path):
-                with open(log_file, 'a', encoding='utf-8') as f:
-                    f.write("Использую локальный драйвер\n")
-                service = Service(driver_path)
-                driver = webdriver.Chrome(service=service, options=chrome_options)
-            else:
-                with open(log_file, 'a', encoding='utf-8') as f:
-                    f.write("Пробую webdriver_manager\n")
-                self.status.emit("Скачиваю chromedriver (может занять минуту)...")
-                from webdriver_manager.chrome import ChromeDriverManager
-                driver_path = ChromeDriverManager().install()
-                with open(log_file, 'a', encoding='utf-8') as f:
-                    f.write(f"webdriver_manager установил: {driver_path}\n")
-                service = Service(driver_path)
-                driver = webdriver.Chrome(service=service, options=chrome_options)
-            
-            with open(log_file, 'a', encoding='utf-8') as f:
-                f.write("Драйвер создан, открываю сайт\n")
-            
+                f.write(f"Драйвер создан ({browser_name}), открываю сайт\n")
+
             driver.get("https://com-x.life")
             
             self.status.emit("Войдите в аккаунт в браузере. Программа ждёт...")
