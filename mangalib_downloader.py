@@ -7,29 +7,29 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import logging
 import json
 from pathlib import Path
-from PyQt6.QtCore import QThread, pyqtSignal
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
-class MangaLibDownloadThread(QThread):
-    progress = pyqtSignal(int, int, str)
-    status = pyqtSignal(str)
-    finished = pyqtSignal(str, str)
-    error = pyqtSignal(str)
-    
+from download_base import BaseDownloadThread
+
+class MangaLibDownloadThread(BaseDownloadThread):
     def __init__(self, url, dest_root, token="", output_format="Папки с картинками", chapter_range=None):
-        super().__init__()
-        self.url = url
-        self.dest_root = dest_root
+        super().__init__(url, dest_root, output_format=output_format)
         self.token = token
-        self.output_format = output_format
-        self.chapter_range = chapter_range                               
-        self.session = requests.Session()
-        
+        self.chapter_range = chapter_range
+
         if 'hentailib' in url:
             self.api_url = "https://hapi.hentaicdn.org/api/manga"
             self.img_domains = ["img3h.hentaicdn.org"]
             self.site_id = "4"
+        elif 'shlib' in url:
+            # SlashLIB/YaoiLib — тот же движок и API, что у HentaiLib
+            # (тоже hapi.hentaicdn.org), только свой Site-Id и картинки
+            # лежат на img3.hentaicdn.org (без "h" в имени поддомена).
+            # Токен — тот же аккаунт MangaLib, полученный через "Получить токен".
+            self.api_url = "https://hapi.hentaicdn.org/api/manga"
+            self.img_domains = ["img3.hentaicdn.org"]
+            self.site_id = "2"
         else:
             self.api_url = "https://api.cdnlibs.org/api/manga"
             self.img_domains = [
@@ -45,38 +45,17 @@ class MangaLibDownloadThread(QThread):
     
     def pack_to_cbz(self, manga_folder, volume_name, chapters_in_volume):
         """Упаковывает том в CBZ с сохранением структуры глав внутри"""
-        import zipfile
         import shutil
-        from pathlib import Path
-        import re
-        
-        cbz_path = manga_folder / f"{volume_name}.cbz"
-        
-        with zipfile.ZipFile(cbz_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for chapter in chapters_in_volume:
-                chapter_folder = manga_folder / volume_name / chapter
-                if not chapter_folder.exists():
-                    continue
-                
-                images = []
-                for ext in ['*.jpg', '*.jpeg', '*.png', '*.webp']:
-                    images.extend(chapter_folder.glob(ext))
-                
-                def get_number(path):
-                    nums = re.findall(r'\d+', path.stem)
-                    return int(nums[0]) if nums else 0
-                images.sort(key=get_number)
-                
-                for i, img in enumerate(images, 1):
-                    arcname = f"Глава {chapter}/{i:03d}{img.suffix}"
-                    zf.write(img, arcname)
-                
-                shutil.rmtree(chapter_folder)
-            
-            shutil.rmtree(manga_folder / volume_name)
-        
+
+        chapter_folders = [manga_folder / volume_name / chapter for chapter in chapters_in_volume]
+        cbz_path = self.pack_chapters_to_cbz(
+            manga_folder / f"{volume_name}.cbz",
+            chapter_folders,
+            lambda folder: f"Глава {folder.name}"
+        )
+        shutil.rmtree(manga_folder / volume_name)
         return cbz_path
-    
+
     def run(self):
         try:
             self.status.emit("Получение информации...")

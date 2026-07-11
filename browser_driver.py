@@ -1,4 +1,5 @@
-"""Запуск Selenium-браузера для интерактивной авторизации (MangaLib, Com-X.life).
+"""Запуск Selenium-браузера для интерактивной авторизации (MangaLib/HentaiLib/SlashLIB,
+Com-X.life, ReadManga/MintManga и зеркала).
 
 Пробует Chrome первым (используя локальный chromedriver.exe рядом с exe,
 если он есть, иначе автоматически скачивает через webdriver_manager).

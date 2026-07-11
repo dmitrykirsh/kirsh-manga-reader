@@ -7,23 +7,14 @@ import logging
 import zipfile
 import shutil
 from pathlib import Path
-from PyQt6.QtCore import QThread, pyqtSignal
+
+from download_base import BaseDownloadThread
 
 
-class ComXDownloadThread(QThread):
-    progress = pyqtSignal(int, int, str)
-    status = pyqtSignal(str)
-    finished = pyqtSignal(str, str)
-    error = pyqtSignal(str)
-    need_auth = pyqtSignal()
-    
+class ComXDownloadThread(BaseDownloadThread):
     def __init__(self, url, dest_root, output_format="Папки с картинками"):
-        super().__init__()
-        self.url = url
-        self.dest_root = dest_root
-        self.output_format = output_format
-        self.session = requests.Session()
-        
+        super().__init__(url, dest_root, output_format=output_format)
+
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -58,6 +49,11 @@ class ComXDownloadThread(QThread):
                 logging.error(f"Не удалось загрузить куки Com-X: {e}")
         return False
     
+    def confirm_manual_auth(self):
+        """Вызывается из UI (кнопка "Я вошёл — продолжить"), когда
+        автоматическое определение куки авторизации не сработало."""
+        self._manual_confirm = True
+
     def auth_via_browser(self):
         import sys
         import os
@@ -93,10 +89,24 @@ class ComXDownloadThread(QThread):
             
             self.status.emit("Войдите в аккаунт в браузере. Программа ждёт...")
             
-            cookies = None
+            self._cancel_requested = False
+            self._manual_confirm = False
             cookies = None
             for i in range(120):
                 time.sleep(1)
+                if self._cancel_requested:
+                    self.status.emit("Авторизация отменена")
+                    if driver:
+                        try:
+                            driver.quit()
+                        except Exception:
+                            pass
+                    self._cookies_loaded = False
+                    return False
+                if self._manual_confirm:
+                    self.status.emit("Подтверждено вручную, сохраняю куки...")
+                    cookies = driver.get_cookies()
+                    break
                 try:
                     cookies = driver.get_cookies()
                     if any(c.get('name') == 'dle_user_id' for c in cookies):
@@ -105,9 +115,14 @@ class ComXDownloadThread(QThread):
                             f.write(f"Авторизация на {i} секунде\n")
                         break
                 except Exception as e:
+                    err_text = str(e).lower()
+                    if 'no such window' in err_text or 'target window' in err_text or 'disconnected' in err_text:
+                        self.status.emit("Окно браузера закрыто. Авторизация отменена.")
+                        self._cookies_loaded = False
+                        return False
                     logging.debug(f"Проверка куки не удалась (это нормально во время ожидания): {e}")
                 if i % 10 == 0 and i > 0:
-                    self.status.emit(f"Ожидание входа... {i} сек")
+                    self.status.emit(f"Ожидание входа... {i} сек (или нажмите «Я вошёл»)")
             else:
                 self.status.emit("Время ожидания истекло")
                 with open(log_file, 'a', encoding='utf-8') as f:
@@ -156,40 +171,21 @@ class ComXDownloadThread(QThread):
         if not manga_folder.exists():
             self.status.emit("Ошибка: папка с мангой не найдена")
             return None
-        
-        cbz_path = manga_folder.parent / f"{manga_folder.name}.cbz"
-        
-        if cbz_path.exists():
-            cbz_path.unlink()
-        
-        with zipfile.ZipFile(cbz_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            chapter_folders = sorted([f for f in manga_folder.iterdir() if f.is_dir()],
-                                     key=lambda x: int(re.search(r'\d+', x.name).group()) if re.search(r'\d+', x.name) else 0)
-            
-            for ch_folder in chapter_folders:
-                if not ch_folder.exists():
-                    continue
-                    
-                images = []
-                for ext in ['*.jpg', '*.jpeg', '*.png', '*.webp']:
-                    images.extend(ch_folder.glob(ext))
-                
-                def get_number(path):
-                    nums = re.findall(r'\d+', path.stem)
-                    return int(nums[0]) if nums else 0
-                images.sort(key=get_number)
-                
-                for i, img in enumerate(images, 1):
-                    arcname = f"{ch_folder.name}/{i:03d}{img.suffix}"
-                    zf.write(img, arcname)
-                
-                shutil.rmtree(ch_folder)
-        
+
+        chapter_folders = sorted([f for f in manga_folder.iterdir() if f.is_dir()],
+                                 key=lambda x: int(re.search(r'\d+', x.name).group()) if re.search(r'\d+', x.name) else 0)
+
+        cbz_path = self.pack_chapters_to_cbz(
+            manga_folder.parent / f"{manga_folder.name}.cbz",
+            chapter_folders,
+            lambda folder: folder.name
+        )
+
         if manga_folder.exists():
             shutil.rmtree(manga_folder)
-        
+
         return cbz_path
-    
+
     def run(self):
         import sys
         import os
@@ -219,6 +215,9 @@ class ComXDownloadThread(QThread):
                 max_wait_seconds = 180  # 3 минуты максимум на всю авторизацию
                 waited_seconds = 0
                 while not self._cookies_loaded:
+                    if self._cancel_requested:
+                        self.status.emit("Скачивание отменено")
+                        return
                     time.sleep(0.5)
                     waited_seconds += 0.5
                     if waited_seconds >= max_wait_seconds:
