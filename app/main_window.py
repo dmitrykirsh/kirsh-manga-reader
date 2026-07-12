@@ -24,9 +24,11 @@ from app.library_cards import LibraryCard, LibraryFolderCard
 from app.dialogs import SettingsDialog, DownloadDialog, run_auth_with_dialog
 from app.info_page import InfoPage
 from app import info_data
+from app import theme
 import mangadex_client
 from mangalib_downloader import MangaLibDownloadThread
 from comx_downloader import ComXDownloadThread
+from mangahub_downloader import MangaHubDownloadThread
 from group_downloader import GroupDownloadThread
 
 
@@ -42,7 +44,7 @@ class MainWindow(QMainWindow):
         self.resize(1350, 850)
         self._volumes_cache = {}
         self.config = {
-            "root_dir": "", "progress": {}, "theme": "Тёмная", "accent": "Розовый",
+            "root_dir": "", "progress": {}, "theme": theme.PRESET_ORDER[0],
             "archive_cache": {}, "card_width": 220, "show_navigation_hint": True,
             "metadata": {}, "webtoon_mode": {}
         }
@@ -113,7 +115,7 @@ class MainWindow(QMainWindow):
 
         self.btn_search = QPushButton("🔍")
         self.btn_search.setFixedSize(36, 36)
-        self.btn_search.setStyleSheet("font-size: 18px; border-radius: 4px;")
+        self.btn_search.setStyleSheet("font-size: 18px; border-radius: 4px; padding: 0px;")
         self.btn_search.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_search.setToolTip("Показать строку поиска")
         self.btn_search.setCheckable(True)
@@ -124,9 +126,9 @@ class MainWindow(QMainWindow):
         # КНОПКИ СПРАВА
         self.btn_download = QPushButton("📥")
         self.btn_download.setFixedSize(36, 36)
-        self.btn_download.setStyleSheet("font-size: 18px; border-radius: 4px;")
+        self.btn_download.setStyleSheet("font-size: 18px; border-radius: 4px; padding: 0px;")
         self.btn_download.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_download.setToolTip("Скачать мангу по ссылке (MangaLib, HentaiLib, SlashLIB, Com-X.life, ReadManga/MintManga)")
+        self.btn_download.setToolTip("Скачать мангу по ссылке")
         self.btn_download.clicked.connect(self.show_download_dialog)
         top_bar.addWidget(self.btn_download)
 
@@ -134,7 +136,7 @@ class MainWindow(QMainWindow):
 
         self.btn_settings = QPushButton("⚙")
         self.btn_settings.setFixedSize(36, 36)
-        self.btn_settings.setStyleSheet("font-size: 18px; border-radius: 4px;")
+        self.btn_settings.setStyleSheet("font-size: 18px; border-radius: 4px; padding: 0px;")
         self.btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_settings.setToolTip("Настройки программы")
         self.btn_settings.clicked.connect(self.open_settings)
@@ -213,6 +215,7 @@ class MainWindow(QMainWindow):
         self.info_page.volume_selected.connect(self.handle_info_volume_selected)
         self.info_page.chapter_selected.connect(self.handle_info_chapter_selected)
         self.info_page.read_file_requested.connect(self.handle_info_read_file_requested)
+        self.info_page.menu_action_triggered.connect(self.handle_info_menu_action)
 
         self.stacked_widget.addWidget(self.main_library_page)
         self.stacked_widget.addWidget(self.reader_page)
@@ -251,6 +254,14 @@ class MainWindow(QMainWindow):
         if not hasattr(self, 'loader') or not isinstance(self.loader, GroupDownloadThread):
             return
         dlg = run_auth_with_dialog(self, self.loader, self.loader.domain)
+        dlg.cancelled.connect(self._abort_download_for_auth_cancel)
+
+    def handle_mangahub_auth(self):
+        """Обработка авторизации для MangaHub.ru, всплывшей во время
+        скачивания (вызывается в главном потоке)."""
+        if not hasattr(self, 'loader') or not isinstance(self.loader, MangaHubDownloadThread):
+            return
+        dlg = run_auth_with_dialog(self, self.loader, "mangahub.ru")
         dlg.cancelled.connect(self._abort_download_for_auth_cancel)
 
     def init_tab_scroll(self, scroll_area, grid_layout):
@@ -339,14 +350,13 @@ class MainWindow(QMainWindow):
         self.reader_page.page_slider.blockSignals(False)
 
     def open_settings(self):
-        dlg = SettingsDialog(self, self.config["root_dir"], self.config["theme"], self.config["accent"])
+        dlg = SettingsDialog(self, self.config["root_dir"], self.config.get("theme", theme.PRESET_ORDER[0]))
         if dlg.exec() == QDialog.DialogCode.Accepted:
             if dlg.rescan_requested:
                 COVER_CACHE.clear()
                 MangaItem.GLOBAL_CACHE = BoundedCache(max_size=300)
             self.config["root_dir"] = dlg.lbl_path.text()
             self.config["theme"] = dlg.combo_theme.currentText()
-            self.config["accent"] = dlg.combo_accent.currentText()
             self.current_dir = dlg.lbl_path.text()
             self.save_config()
             self.apply_theme()
@@ -510,148 +520,133 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Импорт завершён", msg)
 
     def apply_theme(self):
-        theme = self.config.get("theme", "Тёмная")
-        accent_name = self.config.get("accent", "Розовый")
-
-        THEMES = {
-            "Тёмная": "#1e1e1e", "Глубокая чёрная": "#000000", "Тёмно-синяя": "#111a2e",
-            "Тёмно-красная": "#2b1111", "Тёмно-зелёная": "#112415", "Тёмно-фиолетовая": "#1f112e",
-            "Тёмно-серая": "#2d3238"
-        }
-        PANELS = {
-            "Тёмная": "#2a2a2a", "Глубокая чёрная": "#111111", "Тёмно-синяя": "#1b263b",
-            "Тёмно-красная": "#3d1818", "Тёмно-зелёная": "#1b331e", "Тёмно-фиолетовая": "#2e1b40",
-            "Тёмно-серая": "#3a3f47"
-        }
-        ACCENTS = {
-            "Розовый": "#ff69b4", "Оранжевый": "#ff9800", "Синий": "#0078D7",
-            "Зелёный": "#28a745", "Красный": "#dc3545", "Фиолетовый": "#9c27b0"
-        }
-
-        bg = THEMES.get(theme, "#1e1e1e")
-        panel = PANELS.get(theme, "#2a2a2a")
-        accent = ACCENTS.get(accent_name, "#ff69b4")
-        text = "#ffffff"
+        preset_name = self.config.get("theme", theme.PRESET_ORDER[0])
+        p = theme.get_preset(preset_name)
+        bg, panel, card, elevated = p["bg"], p["panel"], p["card"], p["elevated"]
+        accent1 = p["accent1"]
+        accent_grad = theme.accent_gradient_from(p)
+        accent_grad_v = theme.accent_gradient_from(p, "x1:0, y1:0, x2:0, y2:1")
+        text = theme.TEXT_PRIMARY
+        muted = theme.TEXT_MUTED
+        border = theme.BORDER
 
         self.setStyleSheet(f"""
             QMainWindow, QWidget {{ background-color: {bg}; color: {text}; }}
             QScrollArea, QScrollArea QWidget {{ background-color: {bg}; border: none; }}
-            QPushButton {{ background-color: {panel}; color: {text}; border: 1px solid #444; padding: 6px; border-radius: 4px; }}
-            QPushButton:hover {{ background-color: {accent}; color: white; }}
+
+            QPushButton {{
+                background-color: {card}; color: {text}; border: 1px solid {border};
+                padding: 7px 14px; border-radius: {theme.RADIUS_SM}px; font-weight: 500;
+            }}
+            QPushButton:hover {{ background: {accent_grad}; color: white; border-color: transparent; }}
+            QPushButton:pressed {{ background: {accent1}; color: white; }}
+
             QDialog {{ background-color: {bg}; }}
-            QComboBox, QCheckBox {{ background-color: {panel}; color: {text}; padding: 4px; border: 1px solid #444; }}
+            QComboBox, QCheckBox {{
+                background-color: {card}; color: {text}; padding: 6px 8px;
+                border: 1px solid {border}; border-radius: {theme.RADIUS_SM}px;
+            }}
+            QComboBox:hover {{ border-color: {accent1}; }}
+            QComboBox QAbstractItemView {{
+                background-color: {elevated}; color: {text}; border: 1px solid {border};
+                selection-background-color: {accent1}; outline: none;
+            }}
 
-            QProgressBar {{ background-color: #333; border: none; border-radius: 3px; }}
-            QProgressBar::chunk {{ background-color: {accent}; border-radius: 3px; }}
+            QProgressBar {{ background-color: {card}; border: none; border-radius: 3px; }}
+            QProgressBar::chunk {{ background: {accent_grad}; border-radius: 3px; }}
 
-        QSlider::groove:horizontal {{
-            border: 1px solid #444;
-            height: 8px;
-            background: {panel};
-            border-radius: 4px;
-        }}
-        QSlider::sub-page:horizontal {{
-            background: {accent};
-            border-radius: 4px;
-        }}
-        QSlider::add-page:horizontal {{
-            background: transparent;
-        }}
-        QSlider::handle:horizontal {{
-            background: {text};
-            border: 1px solid #444;
-            width: 16px;
-            margin-top: -4px;
-            margin-bottom: -4px;
-            border-radius: 8px;
-        }}
-        QSlider::handle:horizontal:hover {{
-            background: {accent};
-        }}
+            QSlider::groove:horizontal {{
+                border: none; height: 6px; background: {card}; border-radius: 3px;
+            }}
+            QSlider::sub-page:horizontal {{ background: {accent_grad}; border-radius: 3px; }}
+            QSlider::add-page:horizontal {{ background: transparent; }}
+            QSlider::handle:horizontal {{
+                background: {text}; border: none; width: 16px;
+                margin-top: -5px; margin-bottom: -5px; border-radius: 8px;
+            }}
+            QSlider::handle:horizontal:hover {{ background: {accent1}; }}
 
-            /* === НОВЫЕ СТИЛИ ДЛЯ СКРОЛЛБАРА === */
             QScrollBar:vertical {{
-                border: none;
-                background: {panel};
-                width: 12px;
-                border-radius: 6px;
-                margin: 0px;
+                border: none; background: transparent; width: 12px; margin: 0px;
             }}
             QScrollBar::handle:vertical {{
-                background: {accent};
-                min-height: 30px;
-                border-radius: 6px;
+                background: {accent_grad_v}; min-height: 30px; border-radius: 6px; margin: 0 3px;
             }}
-            QScrollBar::handle:vertical:hover {{
-                background: {text};
-            }}
+            QScrollBar::handle:vertical:hover {{ margin: 0px; }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
             QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
-                background: none;
-                height: 0px;
+                background: none; height: 0px;
             }}
 
             QScrollBar:horizontal {{
-                border: none;
-                background: {panel};
-                height: 12px;
-                border-radius: 6px;
-                margin: 0px;
+                border: none; background: transparent; height: 12px; margin: 0px;
             }}
             QScrollBar::handle:horizontal {{
-                background: {accent};
-                min-width: 30px;
-                border-radius: 6px;
+                background: {accent_grad}; min-width: 30px; border-radius: 6px; margin: 3px 0;
             }}
-            QScrollBar::handle:horizontal:hover {{
-                background: {text};
-            }}
+            QScrollBar::handle:horizontal:hover {{ margin: 0px; }}
             QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,
             QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
-                background: none;
-                width: 0px;
+                background: none; width: 0px;
             }}
-            /* ================================== */
 
             QTabBar {{ background: transparent; }}
             QTabBar::tab {{
-                background: {panel};
-                color: {text};
-                padding: 8px 24px;
-                font-weight: bold;
-                border: 2px solid {accent};
-                border-radius: 12px;
+                background: {card};
+                color: {muted};
+                padding: 9px 26px;
+                font-weight: 600;
+                border: 1px solid {border};
+                border-radius: {theme.RADIUS_MD}px;
                 margin: 0 4px;
             }}
-            QTabBar::tab:hover {{ background: {accent}; color: white; }}
-            QTabBar::tab:selected {{ background: {accent}; color: white; border: 2px solid {accent}; }}
+            QTabBar::tab:hover {{ color: {text}; border-color: {accent1}; }}
+            QTabBar::tab:selected {{ background: {accent_grad}; color: white; border-color: transparent; }}
 
-            QTabWidget::pane {{ border: 1px solid #444; background: {bg}; border-radius: 8px; margin-top: -1px; }}
+            QTabWidget::pane {{ border: 1px solid {border}; background: {bg}; border-radius: {theme.RADIUS_MD}px; margin-top: -1px; }}
 
             QPushButton#EmptyLibraryButton {{
-                background-color: {panel};
-                border: 2px dashed {accent};
+                background-color: {card};
+                border: 1px solid {border};
                 padding: 30px;
-                font-size: 15px;
-                font-weight: bold;
-                border-radius: 12px;
+                font-size: {theme.FONT_BODY}px;
+                font-weight: 600;
+                border-radius: {theme.RADIUS_LG}px;
                 min-width: 400px;
             }}
             QPushButton#EmptyLibraryButton:hover {{
-                background-color: {accent};
+                background: {accent_grad};
                 color: white;
-                border-style: solid;
+                border-color: transparent;
             }}
 
-            QMenu {{ background-color: {panel}; color: {text}; border: 1px solid #444; padding: 5px; border-radius: 6px; }}
-            QMenu::item {{ padding: 6px 28px 6px 16px; border-radius: 4px; background-color: transparent; }}
-            QMenu::item:selected {{ background-color: {accent}; color: white; }}
-            QMenu::separator {{ height: 1px; background-color: #444; margin: 4px 6px; }}
+            QMenu {{ background-color: {elevated}; color: {text}; border: 1px solid {border}; padding: 6px; border-radius: {theme.RADIUS_MD}px; }}
+            QMenu::item {{ padding: 7px 28px 7px 16px; border-radius: {theme.RADIUS_SM}px; background-color: transparent; }}
+            QMenu::item:selected {{ background: {accent_grad}; color: white; }}
+            QMenu::separator {{ height: 1px; background-color: {border}; margin: 6px 6px; }}
+
+            QToolTip {{
+                background-color: {elevated}; color: {text}; border: 1px solid {border};
+                padding: 4px 8px; border-radius: 4px; font-size: {theme.FONT_MICRO}px;
+            }}
         """)
         self.reader_view.setStyleSheet(f"background-color: {bg}; border: none;")
-        self.reader_page.top_panel.setStyleSheet(f"background-color: {panel}; max-height: 50px;")
-        self.reader_page.bottom_panel.setStyleSheet(f"background-color: {panel}; max-height: 50px;")
-        self.reader_page.title_label.setStyleSheet(f"color: {text}; font-weight: bold; font-size: 14px; margin-left: 15px;")
+        self.reader_page.top_panel.setStyleSheet(f"background-color: {panel}; max-height: 50px; border-bottom: 1px solid {border};")
+        self.reader_page.bottom_panel.setStyleSheet(f"background-color: {panel}; max-height: 50px; border-top: 1px solid {border};")
+        self.reader_page.title_label.setStyleSheet(f"color: {text}; font-weight: 600; font-size: {theme.FONT_BODY}px; margin-left: 15px;")
+        self.reader_page.btn_next_chap.setStyleSheet(f"""
+            QPushButton {{
+                background: {accent_grad}; color: white; padding: 12px 24px;
+                font-weight: 600; font-size: {theme.FONT_BODY}px; border-radius: {theme.RADIUS_SM}px; border: none;
+            }}
+            QPushButton:hover {{ background: {accent1}; }}
+        """)
+        self.reader_page.btn_webtoon.setStyleSheet(f"""
+            QPushButton#WebtoonToggle:checked {{
+                background: {accent_grad}; color: white; font-weight: 600; border-color: transparent;
+            }}
+        """)
+        self.info_page.set_preset(p)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1222,6 +1217,31 @@ class MainWindow(QMainWindow):
             self.set_item_rating(item_path, action_type.split(":", 1)[1])
             self._refresh_current_tab()
 
+    def handle_info_menu_action(self, action_type, item_path):
+        """Меню действий со страницы манги — то же самое, что и в карточке
+        библиотеки (см. handle_menu_action), но после удаления/переименования
+        путь текущей страницы становится недействительным, так что в этих
+        двух случаях возвращаемся в библиотеку, а не пытаемся удержать
+        открытой уже неактуальную страницу."""
+        if action_type == "delete":
+            self.delete_item_from_device(item_path)
+            self.scan_library(self.current_dir)
+            self.show_library()
+        elif action_type == "rename":
+            self.rename_item(item_path)
+            self.scan_library(self.current_dir)
+            self.show_library()
+        elif action_type == "reset":
+            self.reset_item_progress(item_path)
+            self.scan_library(self.current_dir)
+            self.info_page.set_continue_state(False)
+        elif action_type == "mark_read":
+            self.mark_item_as_read(item_path)
+            self.scan_library(self.current_dir)
+            self.info_page.set_continue_state(True)
+        elif action_type == "open_folder":
+            self.open_in_explorer(item_path)
+
     def _refresh_current_tab(self):
         idx = self.custom_tab_bar.currentIndex()
         if idx == 0:
@@ -1398,11 +1418,18 @@ class MainWindow(QMainWindow):
             cache_key = manga_item.path
             local_volumes = []
 
+        # Сначала переключаем стек на страницу манги, и только потом
+        # заполняем её — иначе show_for() запускает fade-in анимацию
+        # обложки, пока страница ещё скрыта в QStackedWidget, и Qt не
+        # прорисовывает промежуточные кадры: в итоге обложка застревает
+        # невидимой (прозрачность 0), а не проявляется до конца.
+        has_progress = self._series_has_progress(local_volumes, manga_item.path)
+        self.stacked_widget.setCurrentWidget(self.info_page)
         self.info_page.show_for(
             manga_item, search_title=search_title, cache_key=cache_key, local_volumes=local_volumes,
             status=self.get_item_status(cache_key), rating=self.get_item_rating(cache_key),
+            has_progress=has_progress,
         )
-        self.stacked_widget.setCurrentWidget(self.info_page)
 
     def open_series_info(self, folder_path):
         local_volumes = self._list_local_volumes(folder_path)
@@ -1426,11 +1453,13 @@ class MainWindow(QMainWindow):
             return
 
         search_title = os.path.basename(folder_path)
+        has_progress = self._series_has_progress(local_volumes, first_manga.path)
+        self.stacked_widget.setCurrentWidget(self.info_page)
         self.info_page.show_for(
             first_manga, search_title=search_title, cache_key=folder_path, local_volumes=local_volumes,
             status=self.get_item_status(folder_path), rating=self.get_item_rating(folder_path),
+            has_progress=has_progress,
         )
-        self.stacked_widget.setCurrentWidget(self.info_page)
 
     def _is_series_folder(self, folder_path):
         """Папка считается сериями, если внутри есть архивы напрямую, либо если хотя бы
@@ -1503,6 +1532,24 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logging.error(f"Не удалось проверить внутренние главы {path}: {e}")
         return entry
+
+    def _series_has_progress(self, local_volumes, fallback_path):
+        """Есть ли сохранённый прогресс чтения хоть у одного тома/главы серии
+        — раньше проверялся только конкретный переданный файл (первая глава),
+        и если пользователь на самом деле читал другой том, кнопка на
+        странице манги ошибочно показывала "Читать" вместо "Продолжить"."""
+        progress = self.config["progress"]
+        paths = [fallback_path]
+        for entry in local_volumes:
+            if entry.get("chapters"):
+                paths.extend(p for _, p in entry["chapters"] if p)
+            if entry.get("path"):
+                paths.append(entry["path"])
+        for p in paths:
+            prog = progress.get(p, {})
+            if isinstance(prog, dict) and prog.get("page", 0):
+                return True
+        return False
 
     def _list_local_volumes(self, folder_path):
         """Список томов папки-серии, закэшированный на время сессии — построение списка
@@ -1586,12 +1633,12 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "Ошибка", f"Не удалось найти главу: {chapter_name}")
 
-    def open_manga(self, manga_item, start_page=None):
+    def open_manga(self, manga_item, start_page=None, force_webtoon=None):
         if start_page is None:
             prog = self.config["progress"].get(manga_item.path, {})
             start_page = prog.get("page", 0) if isinstance(prog, dict) else 0
         self.reader_page.set_title(manga_item.display_name)
-        self.reader_view.load_manga(manga_item, start_page)
+        self.reader_view.load_manga(manga_item, start_page, force_webtoon=force_webtoon)
         self.reader_page.sync_webtoon_button()
         self.stacked_widget.setCurrentWidget(self.reader_page)
         self.reader_page.hint_frame.setVisible(self.config.get("show_navigation_hint", True))
@@ -1604,8 +1651,31 @@ class MainWindow(QMainWindow):
 
     def open_next_chapter(self):
         if not self.reader_view.current_manga: return
+
+        # Следующая глава есть внутри того же файла (тома вроде Hellsing/
+        # Berserk, где несколько глав склеены в один архив) — переходим на
+        # её первую страницу, никуда файл не открывая заново.
+        chapter_end = self.reader_view._end_of_current_chapter_idx()
+        if chapter_end is not None:
+            next_start = chapter_end + 1
+            self.reader_view.current_page_idx = next_start
+            self.reader_view.is_zoomed = False
+            if self.reader_view.webtoon_mode:
+                self.reader_view._wt_scroll_to_page(next_start)
+                self.reader_view._wt_update_visible()
+            else:
+                self.reader_view.show_page()
+            return
+
         current_path = self.reader_view.current_manga.path
         parent_dir = os.path.dirname(current_path)
+
+        # См. пояснение в ReaderPage.has_next_chapter — не считаем соседние
+        # файлы главами, если текущий файл лежит прямо в корне библиотеки.
+        root_dir = self.config.get('root_dir')
+        if root_dir and os.path.normpath(parent_dir) == os.path.normpath(root_dir):
+            return
+
         try:
             siblings = natsorted([os.path.join(parent_dir, f) for f in os.listdir(parent_dir)
                                   if (os.path.isfile(os.path.join(parent_dir, f)) and f.lower().endswith(ARCHIVE_EXTENSIONS))
@@ -1617,7 +1687,11 @@ class MainWindow(QMainWindow):
 
                 next_manga = MangaItem(next_path)
                 if next_manga.pages:
-                    self.open_manga(next_manga)
+                    # Продолжаем читать в том же режиме (обычном/вертикальном),
+                    # в котором была прочитана предыдущая глава — обычно эта
+                    # у новой главы своя (пока ещё не заданная) настройка
+                    # режима, и без явной передачи он молча сбросился бы.
+                    self.open_manga(next_manga, force_webtoon=self.reader_view.webtoon_mode)
         except Exception as e:
             QMessageBox.critical(self, "Ошибка перехода", str(e))
 
@@ -1657,6 +1731,9 @@ class MainWindow(QMainWindow):
         elif "ReadManga" in site:
             self.loader = GroupDownloadThread(url, root_dir, output_format=output_format)
             self.loader.need_auth.connect(self.handle_group_auth)
+        elif "MangaHub" in site:
+            self.loader = MangaHubDownloadThread(url, root_dir, output_format=output_format)
+            self.loader.need_auth.connect(self.handle_mangahub_auth)
         else:
             self.loader = ComXDownloadThread(url, root_dir, output_format=output_format)
             self.loader.need_auth.connect(self.handle_comx_auth)

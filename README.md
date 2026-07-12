@@ -2,6 +2,8 @@
 
 Легкий, быстрый и стильный нативный ридер манги для Windows. Предназначен для комфортного чтения локальных коллекций манги в форматах папок и архивов, с автоматическим отслеживанием прогресса, **встроенным загрузчиком манги с сайтов** и **страницей информации о манге с автоматическим подтягиванием данных с MangaDex**.
 
+**Версия 3.5**: добавлена поддержка MangaHub.ru для скачивания, полностью переработано оформление интерфейса (см. раздел «Оформление» ниже), исправлен ряд ошибок стабильности и отображения, накопившихся с версии 3.0.
+
 <div align="center">
 <img width="1309" height="992" alt="image" src="https://github.com/user-attachments/assets/cb505aec-4455-4ec9-99eb-767b318d8b78" />
 </div>
@@ -9,7 +11,7 @@
 ## ✨ Возможности
 
 ### 📥 Скачивание манги
-- **Поддержка сайтов**: MangaLib, HentaiLib, SlashLIB/YaoiLib, Com-X.life, а также сеть ReadManga/MintManga (SeiManga, Usagi, Zazaza и их зеркала)
+- **Поддержка сайтов**: MangaLib, HentaiLib, SlashLIB/YaoiLib, Com-X.life, MangaHub.ru, а также сеть ReadManga/MintManga (SeiManga, Usagi, Zazaza и их зеркала)
 - **Автоопределение сайта** по вставленной ссылке
 - **Авторизация через браузер**: достаточно войти 1 раз, куки и токены сохраняются; один аккаунт MangaLib работает и для HentaiLib, и для SlashLIB
 - **Импорт куки из файла** — для сайтов, которые блокируют автоматический вход через браузер (экспорт расширением вроде "Get cookies.txt LOCALLY")
@@ -49,6 +51,14 @@
 <div align="center">
 <img width="1310" height="993" alt="image" src="https://github.com/user-attachments/assets/2d54379e-9f12-4aac-be10-ea64df6062ad" />
 </div>
+
+### 🎨 Оформление
+- **5 готовых цветовых пресетов**: Сакура, Океан, Аметист, Изумруд, Янтарь — фон, поверхности и акцентный градиент подобраны вместе, выбираются одним списком в настройках (Основные → Тема оформления)
+- **Карточки библиотеки**: обложки со скруглёнными углами в цветной градиентной рамке (своя для каждой манги), лёгкая подсветка при наведении
+- **Переработанная страница информации о манге**: крупная обложка с тенью, заголовок на градиентной подложке, отдельные плашки для жанров и метаданных (автор, статус, год и т.д.), отдельные карточки для описания, локальных томов и глав на MangaDex/MAL
+- **Кнопка «Продолжить»** вместо «Читать» — появляется автоматически, если чтение уже начато
+- **Меню действий прямо со страницы манги** (⋮ в углу) — сброс прогресса, отметка о прочтении, переименование, удаление обложки, без выхода в библиотеку
+- **Анимации**: плавное появление обложки, перелистывание страниц, подсветка карточек при наведении
 
 ### 📖 Страница информации о манге
 Клик по серии/тайтлу в библиотеке открывает отдельную страницу с информацией о манге — вместо того, чтобы сразу переходить в читалку.
@@ -103,11 +113,11 @@
 
 ### 📦 Сборка EXE (опционально)
 
-Если хотите собрать самостоятельный исполняемый файл:
+Если хотите собрать самостоятельный исполняемый файл, используйте готовый `KirshMangaReader.spec`:
 
 ```bash
-pip install pyinstaller
-pyinstaller --onefile --windowed --icon=icon.ico --add-data "UnRAR.exe;." --add-data "icon.ico;." --hidden-import=selenium.webdriver.chrome.webdriver --hidden-import=selenium.webdriver.chrome.service --hidden-import=selenium.webdriver.chrome.options --hidden-import=selenium.webdriver.edge.webdriver --hidden-import=selenium.webdriver.edge.service --hidden-import=selenium.webdriver.edge.options --name "KirshMangaReader" mr.py
+py -m pip install pyinstaller
+py -m PyInstaller KirshMangaReader.spec --noconfirm
 ```
 
 Готовый EXE появится в папке `dist\KirshMangaReader.exe`
@@ -148,6 +158,7 @@ pyinstaller --onefile --windowed --icon=icon.ico --add-data "UnRAR.exe;." --add-
 | **MangaLib / HentaiLib / SlashLIB** | Токен (для манги 18+). Получается автоматически через браузер при нажатии "Получить токен" — один аккаунт работает для всех трёх сайтов |
 | **Com-X.life** | Куки. Получаются автоматически через браузер при нажатии "Авторизоваться" |
 | **ReadManga/MintManga и зеркала** | Куки. Выберите или введите домен для входа и нажмите "Авторизоваться", либо импортируйте куки из файла, если конкретное зеркало блокирует автоматический вход |
+| **MangaHub.ru** | Куки, но не обязательны — большинство манги скачивается без входа. Нужны только для приватного/18+ контента; получаются автоматически через браузер при нажатии "Авторизоваться" |
 
 **Важно**: для авторизации требуется установленный браузер Google Chrome или Microsoft Edge (если Chrome не найден, приложение автоматически использует Edge).
 
@@ -172,6 +183,7 @@ pyinstaller --onefile --windowed --icon=icon.ico --add-data "UnRAR.exe;." --add-
 - **Токен MangaLib/HentaiLib/SlashLIB**: `%LOCALAPPDATA%\KirshMangaReader\mangalib_token.json`
 - **Куки Com-X.life**: `%LOCALAPPDATA%\KirshMangaReader\comx_cookies.json`
 - **Куки ReadManga/MintManga** (по одному файлу на домен): `%LOCALAPPDATA%\KirshMangaReader\group_cookies_<домен>.json`
+- **Куки MangaHub.ru**: `%LOCALAPPDATA%\KirshMangaReader\mangahub_cookies.json`
 - **Пользовательские обложки**: `%LOCALAPPDATA%\KirshMangaReader\custom_covers\`
 - **Кэш информации о манге (MangaDex/MAL)**: `%LOCALAPPDATA%\KirshMangaReader\manga_info_cache\`
 

@@ -8,11 +8,12 @@ from natsort import natsorted
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QPushButton, QLabel, QDialog, QMessageBox, QGraphicsView, QGraphicsScene,
     QSlider, QInputDialog, QListWidget)
-from PyQt6.QtGui import QPixmap, QImage, QPainter, QImageReader
-from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QTimer, QBuffer, QByteArray
+from PyQt6.QtGui import QPixmap, QImage, QPainter, QImageReader, QTransform
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject, QTimer, QBuffer, QByteArray, QVariantAnimation, QEasingCurve
 
 from app.constants import ARCHIVE_EXTENSIONS, VALID_EXTENSIONS
 from app.models import get_chapter_list as _shared_get_chapter_list, get_first_page_of_chapter as _shared_get_first_page_of_chapter
+from app.image_utils import load_image_bounded
 
 # Сколько страниц предзагружать вперёд/назад от текущей и сколько
 # декодированных страниц держать в кэше (текущая + окно предзагрузки + запас).
@@ -37,8 +38,7 @@ class PagePrefetchWorker(QObject):
         data = manga.get_page_data(page_idx)
         if not data:
             return
-        image = QImage()
-        image.loadFromData(data)
+        image = load_image_bounded(data)
         if not image.isNull():
             self.page_ready.emit(manga.path, page_idx, image)
 
@@ -85,6 +85,11 @@ class ReaderView(QGraphicsView):
         self.current_page_idx = 0
         self.pixmap_item = None
         self.is_zoomed = False
+        # Стартовые индексы страниц глав ПО ОГЛАВЛЕНИЮ текущего файла (для
+        # томов, где несколько глав склеены в один архив — Hellsing/Berserk-
+        # style). Нужны, чтобы кнопка "следующая глава" всплывала не только
+        # в самом конце файла, но и на границах глав внутри него.
+        self._chapter_boundaries = []
 
         self._page_cache = OrderedDict()
         self._pending_prefetch = set()
@@ -99,7 +104,7 @@ class ReaderView(QGraphicsView):
         self._wt_y_offsets = {}
         self._wt_total_height = 0
         self._wt_target_width = 0
-        self._wt_placeholder_cache = {}
+        self._wt_placeholder_pixmap = None
         self._wt_scroll_timer = QTimer(self)
         self._wt_scroll_timer.setSingleShot(True)
         self._wt_scroll_timer.timeout.connect(self._wt_update_visible)
@@ -115,29 +120,81 @@ class ReaderView(QGraphicsView):
 
         self.verticalScrollBar().valueChanged.connect(self._on_wt_scrolled)
 
+        # Лёгкое проявление страницы при перелистывании в обычном режиме —
+        # без анимации смена картинки читалась как резкий, "дешёвый" скачок.
+        self._page_fade_anim = QVariantAnimation(self)
+        self._page_fade_anim.setDuration(140)
+        self._page_fade_anim.setStartValue(0.35)
+        self._page_fade_anim.setEndValue(1.0)
+        self._page_fade_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._page_fade_anim.valueChanged.connect(self._on_page_fade_value)
+
         from PyQt6.QtWidgets import QApplication
         app = QApplication.instance()
         if app is not None:
             app.aboutToQuit.connect(self._stop_prefetch_thread)
 
+    def _on_page_fade_value(self, value):
+        if self.pixmap_item:
+            self.pixmap_item.setOpacity(value)
+
     def _stop_prefetch_thread(self):
         self._prefetch_thread.quit()
         self._prefetch_thread.wait(2000)
 
-    def load_manga(self, manga_item, start_page=0):
+    def load_manga(self, manga_item, start_page=0, force_webtoon=None):
         self.current_manga = manga_item
         self.current_manga.open_archive()
         self.current_page_idx = start_page
         self.is_zoomed = False
         self._page_cache.clear()
         self._pending_prefetch.clear()
+        self._chapter_boundaries = self._compute_chapter_boundaries()
 
-        want_webtoon = bool(self.main_window and self.main_window.get_webtoon_pref(manga_item.path))
+        if force_webtoon is not None:
+            # Явно передан режим (переход на "Следующую главу" из вертикального
+            # режима) — используем его вместо сохранённой на диске настройки
+            # для конкретного файла, чтобы не сбрасывать режим чтения на
+            # середине серии.
+            want_webtoon = force_webtoon
+        else:
+            want_webtoon = bool(self.main_window and self.main_window.get_webtoon_pref(manga_item.path))
         self.webtoon_mode = False
         if want_webtoon:
             self.set_webtoon_mode(True)
         else:
             self.show_page()
+
+    def _compute_chapter_boundaries(self):
+        """Стартовые индексы страниц глав по оглавлению текущего файла
+        (отсортированные, без дублей) — только если в файле реально больше
+        одной главы (Hellsing/Berserk-style тома, где несколько глав склеены
+        в один архив). Иначе — пустой список, обычная логика "конец файла"."""
+        if not self.current_manga:
+            return []
+        try:
+            chapters = _shared_get_chapter_list(self.current_manga)
+        except Exception:
+            return []
+        if len(chapters) < 2:
+            return []
+        starts = set()
+        for ch in chapters:
+            idx = _shared_get_first_page_of_chapter(self.current_manga, ch)
+            if idx >= 0:
+                starts.add(idx)
+        starts = sorted(starts)
+        return starts if len(starts) >= 2 else []
+
+    def _end_of_current_chapter_idx(self):
+        """Индекс последней страницы ТЕКУЩЕЙ главы, если после неё в этом же
+        файле есть ещё глава — используется, чтобы кнопка "следующая глава"
+        всплывала и на границах глав внутри одного файла, а не только в
+        самом конце файла целиком."""
+        for start in self._chapter_boundaries:
+            if start > self.current_page_idx:
+                return start - 1
+        return None
 
     def _cache_page(self, page_idx, image):
         self._page_cache[page_idx] = image
@@ -155,6 +212,7 @@ class ReaderView(QGraphicsView):
                 pixmap = QPixmap.fromImage(image).scaledToWidth(
                     self._wt_target_width, Qt.TransformationMode.SmoothTransformation)
                 item.setPixmap(pixmap)
+                item.setTransform(QTransform())  # сброс растяжения плейсхолдера — реальный пиксмап уже нужного размера
                 self._wt_loaded.add(page_idx)
             return
         self._cache_page(page_idx, image)
@@ -183,8 +241,7 @@ class ReaderView(QGraphicsView):
         if image is None:
             data = self.current_manga.get_page_data(idx)
             if not data: return
-            image = QImage()
-            image.loadFromData(data)
+            image = load_image_bounded(data)
             if image.isNull(): return
             self._cache_page(idx, image)
         else:
@@ -197,9 +254,16 @@ class ReaderView(QGraphicsView):
         self.scene.setSceneRect(self.pixmap_item.pixmap().rect().toRectF())
 
         self.fit_to_height()
+        self._page_fade_anim.stop()
+        self.pixmap_item.setOpacity(0.35)
+        self._page_fade_anim.start()
         self.progress_changed.emit(self.current_manga.path, self.current_page_idx, len(self.current_manga.pages))
 
-        is_last = (self.current_page_idx == len(self.current_manga.pages) - 1)
+        chapter_end = self._end_of_current_chapter_idx()
+        if chapter_end is not None:
+            is_last = self.current_page_idx >= chapter_end
+        else:
+            is_last = (self.current_page_idx == len(self.current_manga.pages) - 1)
         self.last_page_reached.emit(is_last)
 
         self._schedule_prefetch()
@@ -285,14 +349,21 @@ class ReaderView(QGraphicsView):
         self.current_page_idx = idx
         self.show_page()
 
-    def _get_placeholder(self, width, height):
-        key = (width, max(height, 1))
-        pixmap = self._wt_placeholder_cache.get(key)
-        if pixmap is None:
-            pixmap = QPixmap(key[0], key[1])
+    def _get_placeholder(self):
+        # Один маленький переиспользуемый плейсхолдер на все страницы, а не
+        # плейсхолдер полного размера под каждую страницу — некоторые
+        # манхва-страницы представляют собой один скан главы целиком
+        # (десятки тысяч пикселей высотой), и аллокация под них honest-size
+        # плейсхолдера для ВСЕХ страниц сразу при раскладке (до того, как
+        # хоть одна страница реально понадобилась на экране) — по сути и
+        # была причиной зависания при включении вертикального режима.
+        # Нужный размер на экране получаем растяжением через
+        # item.setTransform(), а не размером самого пиксмапа.
+        if self._wt_placeholder_pixmap is None:
+            pixmap = QPixmap(8, 8)
             pixmap.fill(Qt.GlobalColor.darkGray)
-            self._wt_placeholder_cache[key] = pixmap
-        return pixmap
+            self._wt_placeholder_pixmap = pixmap
+        return self._wt_placeholder_pixmap
 
     def _on_sizes_probed(self, manga_path, results):
         if not self.webtoon_mode or not self.current_manga or self.current_manga.path != manga_path:
@@ -314,13 +385,17 @@ class ReaderView(QGraphicsView):
         self.scene.clear()
         self.pixmap_item = None
 
+        placeholder = self._get_placeholder()
+        ph_w, ph_h = placeholder.width(), placeholder.height()
+
         y = 0.0
         for idx in range(len(self.current_manga.pages)):
             width, height = self._wt_raw_sizes.get(idx, (target_width, int(target_width * 1.4)))
             scaled_h = height * (target_width / width) if width > 0 else height
             self._wt_heights[idx] = scaled_h
             self._wt_y_offsets[idx] = y
-            item = self.scene.addPixmap(self._get_placeholder(target_width, int(scaled_h)))
+            item = self.scene.addPixmap(placeholder)
+            item.setTransform(QTransform.fromScale(target_width / ph_w, max(scaled_h, 1) / ph_h))
             item.setPos(0, y)
             self._wt_items[idx] = item
             y += scaled_h
@@ -363,9 +438,11 @@ class ReaderView(QGraphicsView):
         self._wt_loaded.discard(idx)
         item = self._wt_items.get(idx)
         if item:
+            placeholder = self._get_placeholder()
             width = self._wt_target_width
-            height = int(self._wt_heights.get(idx, 0))
-            item.setPixmap(self._get_placeholder(width, height))
+            height = max(int(self._wt_heights.get(idx, 0)), 1)
+            item.setPixmap(placeholder)
+            item.setTransform(QTransform.fromScale(width / placeholder.width(), height / placeholder.height()))
 
     def _wt_update_visible(self):
         if not self.webtoon_mode or not self._wt_ready or not self.current_manga:
@@ -395,7 +472,12 @@ class ReaderView(QGraphicsView):
         if current_idx is not None:
             self.current_page_idx = current_idx
             self.progress_changed.emit(self.current_manga.path, current_idx, len(self.current_manga.pages))
-            is_last = bottom >= (self._wt_total_height - 5)
+            chapter_end = self._end_of_current_chapter_idx()
+            if chapter_end is not None:
+                end_y = self._wt_y_offsets.get(chapter_end, 0) + self._wt_heights.get(chapter_end, 0)
+                is_last = bottom >= (end_y - 5)
+            else:
+                is_last = bottom >= (self._wt_total_height - 5)
             self.last_page_reached.emit(is_last)
 
     def wheelEvent(self, event):
@@ -464,9 +546,22 @@ class ReaderView(QGraphicsView):
     def resizeEvent(self, event):
         if self.webtoon_mode:
             if self._wt_ready and self.current_manga and abs(self.viewport().width() - self._wt_target_width) > 5:
-                current_idx = self.current_page_idx
+                # Позиция восстанавливается по фактической доле прокрутки, а не
+                # по self.current_page_idx — тот обновляется с задержкой
+                # (debounce 80мс в _on_wt_scrolled) и может быть устаревшим
+                # именно в момент ресайза. Ресайз тут — не только от руки
+                # пользователя: у длинных страниц-сканов вертикальный
+                # скроллбар появляется/пропадает по мере прокрутки (меняется
+                # ширина вьюпорта), и это тоже resizeEvent. Раньше в этот
+                # момент вид откатывался к последней зафиксированной
+                # странице — из-за этого при подходе к самому концу главы
+                # кнопка "следующая глава" не успевала появиться.
+                old_total = max(self._wt_total_height, 1)
+                old_top = self._wt_visible_scene_rect().top()
+                fraction = min(max(old_top / old_total, 0.0), 1.0)
                 self._wt_rebuild_layout()
-                self._wt_scroll_to_page(current_idx)
+                target_y = fraction * self._wt_total_height + self.viewport().height() / 2
+                self.centerOn(self._wt_target_width / 2, target_y)
                 self._wt_update_visible()
             super().resizeEvent(event)
             return
@@ -511,9 +606,9 @@ class ReaderPage(QWidget):
         panel_layout.addWidget(self.btn_toc)
 
         self.btn_webtoon = QPushButton("📜 Вертикальный режим")
+        self.btn_webtoon.setObjectName("WebtoonToggle")
         self.btn_webtoon.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_webtoon.setCheckable(True)
-        self.btn_webtoon.setStyleSheet("QPushButton:checked { background-color: #ff9800; color: black; font-weight: bold; }")
         self.btn_webtoon.clicked.connect(self.toggle_webtoon_mode)
         panel_layout.addWidget(self.btn_webtoon)
 
@@ -575,6 +670,9 @@ class ReaderPage(QWidget):
         self.hint_frame.hide()
 
         self.next_chap_widget = QWidget()
+        # Без явного фона виджет наследует глобальный QWidget { background-color: ... }
+        # из apply_theme() — вокруг кнопки рисовался сплошной серый прямоугольник.
+        self.next_chap_widget.setStyleSheet("background: transparent;")
         nc_layout = QHBoxLayout(self.next_chap_widget)
         nc_layout.setContentsMargins(0, 0, 25, 25)
         self.btn_next_chap = QPushButton("Следующая глава →")
@@ -727,8 +825,27 @@ class ReaderPage(QWidget):
 
     def has_next_chapter(self):
         if not self.reader_view.current_manga: return False
+
+        # Если в текущем файле по оглавлению есть ещё глава после текущей
+        # позиции (тома вроде Hellsing/Berserk, где несколько глав склеены в
+        # один архив) — "следующая глава" ведёт туда, независимо от того, где
+        # лежит сам файл.
+        if self.reader_view._end_of_current_chapter_idx() is not None:
+            return True
+
         current_path = self.reader_view.current_manga.path
         parent_dir = os.path.dirname(current_path)
+
+        # "Следующая глава" имеет смысл только внутри папки-серии, где все
+        # соседние файлы — главы одной и той же манги. Если файл лежит прямо
+        # в корне библиотеки вперемешку с другими, никак не связанными
+        # тайтлами (например, отдельные файлы "Хрупкий мир.cbz" и
+        # "Чёрный Клевер.cbz" рядом друг с другом), соседний по алфавиту
+        # файл — это просто другая манга, а не следующая глава.
+        root_dir = self._library_root_dir()
+        if root_dir and os.path.normpath(parent_dir) == os.path.normpath(root_dir):
+            return False
+
         try:
             siblings = natsorted([os.path.join(parent_dir, f) for f in os.listdir(parent_dir)
                                   if (os.path.isfile(os.path.join(parent_dir, f)) and f.lower().endswith(ARCHIVE_EXTENSIONS))
@@ -736,6 +853,11 @@ class ReaderPage(QWidget):
             idx = siblings.index(current_path)
             return idx < len(siblings) - 1
         except Exception: return False
+
+    def _library_root_dir(self):
+        main_window = self.reader_view.main_window
+        config = getattr(main_window, 'config', None) if main_window else None
+        return config.get('root_dir') if config else None
 
     def _extract_number(self, name):
         """Извлекает число из названия главы для сортировки"""

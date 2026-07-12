@@ -52,7 +52,7 @@ except ImportError:
 VALID_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp', '.bmp')
 ARCHIVE_EXTENSIONS = ('.zip', '.cbz', '.rar', '.cbr')
 
-APP_VERSION = "3.0"
+APP_VERSION = "3.5"
 GITHUB_REPO = "dmitrykirsh/kirsh-manga-reader"
 
 

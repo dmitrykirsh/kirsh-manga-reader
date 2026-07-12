@@ -4,14 +4,17 @@ import html
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
-    QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem, QInputDialog, QMenu, QFrame
+    QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem, QInputDialog, QMenu, QFrame,
+    QGraphicsDropShadowEffect, QLayout, QSizePolicy
 )
-from PyQt6.QtGui import QPixmap
-from PyQt6.QtCore import Qt, pyqtSignal, QThread
+from PyQt6.QtGui import QPixmap, QColor, QAction
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QRect, QSize, QPoint
 import requests
 
 from app import info_data
-from app.models import get_chapter_list, get_first_page_of_chapter
+from app import theme
+from app.models import get_chapter_list, get_first_page_of_chapter, get_cover_bytes
+from app.image_utils import round_pixmap, scale_to_fill
 from app.library_cards import STATUS_LABELS, RATING_LABELS, _add_status_actions, _add_rating_actions
 
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
@@ -19,6 +22,76 @@ _VOLUME_NUM_RE = re.compile(r"\d+")
 
 STATUS_TEXT = dict(STATUS_LABELS)
 RATING_TEXT = dict(RATING_LABELS)
+
+
+class FlowLayout(QLayout):
+    """Раскладка, переносящая дочерние виджеты на новую строку по мере
+    нехватки ширины — для плашек жанров, которых может быть и 3, и 12,
+    заранее неизвестно сколько влезет в одну строку."""
+
+    def __init__(self, parent=None, margin=0, h_spacing=8, v_spacing=8):
+        super().__init__(parent)
+        self._h_spacing = h_spacing
+        self._v_spacing = v_spacing
+        self._items = []
+        self.setContentsMargins(margin, margin, margin, margin)
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, index):
+        return self._items[index] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index):
+        return self._items.pop(index) if 0 <= index < len(self._items) else None
+
+    def expandingDirections(self):
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._do_layout(rect, test_only=False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        size += QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+        return size
+
+    def _do_layout(self, rect, test_only):
+        left, top, right, bottom = self.getContentsMargins()
+        effective = rect.adjusted(left, top, -right, -bottom)
+        x, y = effective.x(), effective.y()
+        line_height = 0
+
+        for item in self._items:
+            hint = item.sizeHint()
+            next_x = x + hint.width() + self._h_spacing
+            if next_x - self._h_spacing > effective.right() and line_height > 0:
+                x = effective.x()
+                y += line_height + self._v_spacing
+                next_x = x + hint.width() + self._h_spacing
+                line_height = 0
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x = next_x
+            line_height = max(line_height, hint.height())
+
+        return y + line_height - rect.y() + bottom
 
 
 def _description_to_html(text):
@@ -83,6 +156,7 @@ class InfoPage(QWidget):
     volume_selected = pyqtSignal(str)
     chapter_selected = pyqtSignal(str, str)
     read_file_requested = pyqtSignal(str)
+    menu_action_triggered = pyqtSignal(str, str)
 
     def __init__(self):
         super().__init__()
@@ -98,14 +172,18 @@ class InfoPage(QWidget):
         self._fetch_token = 0
         self._cover_token = 0
 
+        self._preset = theme.get_preset(theme.PRESET_ORDER[0])
+        self._current_genres = []
+
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
         top_panel = QWidget()
         top_panel.setObjectName("TopPanel")
+        top_panel.setStyleSheet("QWidget#TopPanel { border-bottom: 1px solid rgba(255,255,255,0.08); }")
         top_layout = QHBoxLayout(top_panel)
-        top_layout.setContentsMargins(15, 5, 15, 5)
+        top_layout.setContentsMargins(15, 8, 15, 8)
 
         self.btn_back = QPushButton("← В библиотеку")
         self.btn_back.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -123,109 +201,174 @@ class InfoPage(QWidget):
         top_layout.addWidget(self.btn_change_link)
 
         top_layout.addStretch()
+
+        self.btn_menu = QPushButton("⋮")
+        self.btn_menu.setObjectName("IconMenuButton")
+        self.btn_menu.setFixedSize(36, 34)
+        self.btn_menu.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_menu.setToolTip("Действия с мангой")
+        self.btn_menu.clicked.connect(self._show_item_menu)
+        top_layout.addWidget(self.btn_menu)
+
         main_layout.addWidget(top_panel)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
         body = QWidget()
         body_layout = QHBoxLayout(body)
-        body_layout.setContentsMargins(24, 24, 24, 24)
-        body_layout.setSpacing(28)
+        body_layout.setContentsMargins(28, 28, 28, 28)
+        body_layout.setSpacing(32)
 
+        # --- Обложка: крупнее, с мягкой тенью, чтобы "выступала" над фоном ---
+        # Тень — единственный QGraphicsEffect на этой странице. Раньше сюда же
+        # добавлялся QGraphicsOpacityEffect на fade-in всей страницы, обёрнутый
+        # вокруг этого блока — Qt не умеет корректно рисовать вложенные друг в
+        # друга эффекты (тень на дочернем виджете внутри виджета с opacity-
+        # эффектом), из-за чего обложка переставала отрисовываться вообще.
+        cover_col = QVBoxLayout()
+        cover_col.setSpacing(0)
         self.cover_label = QLabel()
-        self.cover_label.setFixedSize(270, 385)
-        self.cover_label.setStyleSheet("background-color: #2a2a2a; border-radius: 8px;")
+        self.cover_label.setFixedSize(300, 430)
+        self.cover_label.setObjectName("CoverLabel")
+        self.cover_label.setStyleSheet(
+            "QLabel#CoverLabel { background: rgba(255,255,255,0.06); border-radius: 14px; }"
+        )
         self.cover_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.cover_label.setScaledContents(False)
-        body_layout.addWidget(self.cover_label, 0, Qt.AlignmentFlag.AlignTop)
+        cover_shadow = QGraphicsDropShadowEffect(self.cover_label)
+        cover_shadow.setBlurRadius(36)
+        cover_shadow.setOffset(0, 10)
+        cover_shadow.setColor(QColor(0, 0, 0, 160))
+        self.cover_label.setGraphicsEffect(cover_shadow)
+        cover_col.addWidget(self.cover_label)
+        # Без stretch снизу QHBoxLayout центрирует cover_col по высоте всей
+        # строки (а строка высокая — задаётся правой колонкой с описанием и
+        # списками) — обложка "плавала" в середине вместо того, чтобы стоять
+        # у верхнего края рядом с заголовком.
+        cover_col.addStretch()
+        body_layout.addLayout(cover_col, 0)
+        body_layout.setAlignment(cover_col, Qt.AlignmentFlag.AlignTop)
 
         right_col = QVBoxLayout()
-        right_col.setSpacing(10)
+        right_col.setSpacing(12)
+
+        # "Hero" — заголовок и статус/оценка сидят на мягкой градиентной
+        # подложке пресета, а не на голом фоне страницы — раньше вся правая
+        # колонка была плоской, без единого цветового акцента наверху.
+        self.hero_frame = QFrame()
+        self.hero_frame.setObjectName("HeroCard")
+        hero_layout = QVBoxLayout(self.hero_frame)
+        hero_layout.setContentsMargins(20, 18, 20, 18)
+        hero_layout.setSpacing(10)
+        right_col.addWidget(self.hero_frame)
 
         self.title_label = QLabel("")
         self.title_label.setWordWrap(True)
-        self.title_label.setStyleSheet("font-size: 23px; font-weight: bold;")
-        right_col.addWidget(self.title_label)
+        # background:transparent — иначе лейбл наследует сплошной фон страницы
+        # из глобального QWidget {background-color:...} и рисует тёмный
+        # прямоугольник поверх градиентной подложки hero-блока.
+        self.title_label.setStyleSheet(
+            f"background: transparent; color: {theme.TEXT_PRIMARY}; "
+            f"font-size: {theme.FONT_DISPLAY + 4}px; font-weight: 800; letter-spacing: 0.3px;"
+        )
+        hero_layout.addWidget(self.title_label)
 
         self.original_title_label = QLabel("")
         self.original_title_label.setWordWrap(True)
-        self.original_title_label.setStyleSheet("color: #999999; font-style: italic; font-size: 13px;")
-        right_col.addWidget(self.original_title_label)
+        self.original_title_label.setStyleSheet(
+            f"background: transparent; color: {theme.TEXT_MUTED}; "
+            f"font-style: italic; font-size: {theme.FONT_TITLE}px;"
+        )
+        hero_layout.addWidget(self.original_title_label)
 
         status_row = QHBoxLayout()
         status_row.setSpacing(8)
         self.btn_status = QPushButton()
         self.btn_status.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_status.setStyleSheet(_TAG_BUTTON_STYLE)
         self.btn_status.clicked.connect(self._show_status_menu)
         status_row.addWidget(self.btn_status)
 
         self.btn_rating = QPushButton()
         self.btn_rating.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_rating.setStyleSheet(_TAG_BUTTON_STYLE)
         self.btn_rating.clicked.connect(self._show_rating_menu)
         status_row.addWidget(self.btn_rating)
 
         status_row.addStretch()
-        right_col.addLayout(status_row)
-
-        right_col.addWidget(_separator())
+        hero_layout.addLayout(status_row)
 
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet(
-            "background-color: #4a2f1a; color: #ffcc80; padding: 8px 12px; "
-            "border-radius: 6px; border: 1px solid #ff9800;"
+            "background-color: #4a2f1a; color: #ffcc80; padding: 10px 14px; "
+            "border-radius: 8px; border: 1px solid #ff9800; font-size: 13px;"
         )
         self.status_label.hide()
         right_col.addWidget(self.status_label)
 
-        self.meta_label = QLabel("")
-        self.meta_label.setWordWrap(True)
-        self.meta_label.setTextFormat(Qt.TextFormat.RichText)
-        self.meta_label.setStyleSheet("font-size: 13px;")
-        right_col.addWidget(self.meta_label)
+        # Жанры — отдельные цветные плашки, а не текст через запятую.
+        # Количество жанров заранее не известно, поэтому обёртка сама
+        # переносит их на следующую строку по мере нехватки места (FlowLayout).
+        self.genres_frame = QWidget()
+        self._genres_flow = FlowLayout(self.genres_frame, margin=0, h_spacing=8, v_spacing=8)
+        right_col.addWidget(self.genres_frame)
+        self.genres_frame.hide()
 
-        self.btn_read = QPushButton("▶  Читать")
+        # Плашка метаданных — раньше была ЕДВА темнее фона страницы (почти не
+        # видна) с таблицей текста внутри. Теперь однозначно тёмная карточка,
+        # а каждое поле (автор/статус/год...) — отдельная плашка на градиенте,
+        # той же природы, что и плашки жанров, но ярче и с двухцветной заливкой.
+        self.meta_frame = QFrame()
+        self.meta_frame.setObjectName("MetaCard")
+        self.meta_frame.setFrameShape(QFrame.Shape.NoFrame)
+        meta_frame_layout = QVBoxLayout(self.meta_frame)
+        meta_frame_layout.setContentsMargins(18, 16, 18, 16)
+        self.meta_chips_frame = QWidget()
+        self._meta_flow = FlowLayout(self.meta_chips_frame, margin=0, h_spacing=8, v_spacing=8)
+        meta_frame_layout.addWidget(self.meta_chips_frame)
+        right_col.addWidget(self.meta_frame)
+
+        self.btn_read = QPushButton("▶   Читать")
         self.btn_read.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_read.setStyleSheet(
-            "QPushButton { background-color: #ff9800; color: black; font-weight: bold; font-size: 14px; "
-            "padding: 8px 22px; border-radius: 6px; border: none; }"
-            "QPushButton:hover { background-color: #ffb74d; }"
-        )
         self.btn_read.clicked.connect(lambda: self.current_manga and self.read_clicked.emit(self.current_manga))
         right_col.addWidget(self.btn_read, 0, Qt.AlignmentFlag.AlignLeft)
+        self._has_progress = False
 
-        self.volumes_label = _section_header("Локальные тома")
-        right_col.addWidget(self.volumes_label)
+        # "Блоки" — локальные тома, главы в файле, описание и главы на
+        # MangaDex/MAL — все одной и той же тёмной карточной системы, что и
+        # плашка метаданных, а не голые списки прямо на фоне страницы.
+        self.volumes_frame, volumes_inner = self._make_card("Локальные тома")
         self.volumes_list = QTreeWidget()
         self.volumes_list.setHeaderHidden(True)
         self.volumes_list.setMaximumHeight(220)
         self.volumes_list.itemClicked.connect(self._on_volume_clicked)
-        right_col.addWidget(self.volumes_list)
-        self.volumes_label.hide()
-        self.volumes_list.hide()
+        volumes_inner.addWidget(self.volumes_list)
+        right_col.addWidget(self.volumes_frame)
+        self.volumes_frame.hide()
 
-        self.local_chapters_label = _section_header("Главы в файле")
-        right_col.addWidget(self.local_chapters_label)
+        self.local_chapters_frame, local_chapters_inner = self._make_card("Главы в файле")
         self.local_chapters_list = QListWidget()
         self.local_chapters_list.setMaximumHeight(150)
         self.local_chapters_list.itemDoubleClicked.connect(self._on_local_chapter_double_clicked)
-        right_col.addWidget(self.local_chapters_list)
-        self.local_chapters_label.hide()
-        self.local_chapters_list.hide()
+        local_chapters_inner.addWidget(self.local_chapters_list)
+        right_col.addWidget(self.local_chapters_frame)
+        self.local_chapters_frame.hide()
 
+        self.description_frame, description_inner = self._make_card("Описание")
         self.description_label = QLabel("")
         self.description_label.setWordWrap(True)
         self.description_label.setTextFormat(Qt.TextFormat.RichText)
         self.description_label.setOpenExternalLinks(True)
-        self.description_label.setStyleSheet("font-size: 13px; line-height: 140%;")
-        right_col.addWidget(self.description_label)
+        self.description_label.setStyleSheet(f"background: transparent; font-size: {theme.FONT_BODY_SMALL}px; line-height: 160%; color: {theme.TEXT_PRIMARY};")
+        description_inner.addWidget(self.description_label)
+        right_col.addWidget(self.description_frame)
 
-        right_col.addWidget(_section_header("Главы на MangaDex/MAL"))
+        self.mangadex_frame, mangadex_inner = self._make_card("Главы на MangaDex/MAL")
         self.chapters_list = QListWidget()
         self.chapters_list.setMaximumHeight(220)
-        right_col.addWidget(self.chapters_list)
+        mangadex_inner.addWidget(self.chapters_list)
+        right_col.addWidget(self.mangadex_frame)
 
         right_col.addStretch()
         body_layout.addLayout(right_col, 1)
@@ -233,12 +376,88 @@ class InfoPage(QWidget):
         scroll.setWidget(body)
         main_layout.addWidget(scroll, 1)
 
+        self.set_preset(theme.get_preset(theme.PRESET_ORDER[0]))
+
+    def set_preset(self, p):
+        """Применяет цветовой пресет темы (вызывается из MainWindow.apply_theme).
+        Раньше акцент был одним плоским цветом, жёстко зашитым в оранжевый
+        независимо от настройки, а рамка метаданных — без градиентов и
+        скруглений ("как из Windows 2000"). Теперь всё берётся из
+        app.theme.PRESETS и красится градиентом пресета."""
+        self._preset = p
+        gradient = theme.accent_gradient_from(p)
+        accent1, accent2 = p["accent1"], p["accent2"]
+        a1 = QColor(accent1)
+        a2 = QColor(accent2)
+
+        self.hero_frame.setStyleSheet(
+            "QFrame#HeroCard { "
+            f"background: qlineargradient(x1:0, y1:0, x2:1, y2:1, "
+            f"stop:0 rgba({a1.red()},{a1.green()},{a1.blue()},46), "
+            f"stop:1 rgba({a2.red()},{a2.green()},{a2.blue()},20)); "
+            f"border: 1px solid rgba({a1.red()},{a1.green()},{a1.blue()},70); "
+            f"border-radius: {theme.RADIUS_LG}px; }}"
+        )
+
+        # Плашка метаданных и остальные карточки-блоки (тома/главы/описание) —
+        # той же природы, что и hero-блок с заголовком, но однозначно тёмные
+        # (сплошной почти чёрный, а не полупрозрачная накладка поверх и без
+        # того тёмного фона страницы — раньше это давало едва заметную рамку
+        # без контраста фона).
+        dark_card_css = (
+            "background-color: #121114; "
+            f"border: 1px solid rgba(255,255,255,0.07); border-radius: {theme.RADIUS_MD}px;"
+        )
+        self.meta_frame.setStyleSheet(f"QFrame#MetaCard {{ {dark_card_css} }}")
+        for frame in (self.volumes_frame, self.local_chapters_frame, self.description_frame, self.mangadex_frame):
+            frame.setStyleSheet(f"QFrame#BlockCard {{ {dark_card_css} }}")
+        tag_style = (
+            f"QPushButton {{ padding: 7px 18px; border-radius: 16px; "
+            f"border: 1.5px solid {accent1}; color: {accent2}; "
+            f"background: rgba(255,255,255,0.03); font-size: {theme.FONT_CAPTION}px; font-weight: 600; }}"
+            f"QPushButton:hover {{ background: {gradient}; color: white; border-color: transparent; }}"
+        )
+        self.btn_status.setStyleSheet(tag_style)
+        self.btn_rating.setStyleSheet(tag_style)
+        self.btn_read.setStyleSheet(
+            f"QPushButton {{ background: {gradient}; color: white; font-weight: 700; font-size: {theme.FONT_BODY}px; "
+            f"padding: 12px 32px; border-radius: {theme.RADIUS_SM}px; border: none; }}"
+            f"QPushButton:hover {{ background: {accent1}; }}"
+        )
+        for label in self.findChildren(QLabel):
+            if label.property("_section_header"):
+                label.setStyleSheet(
+                    f"color: {accent2}; font-weight: bold; font-size: {theme.FONT_CAPTION}px; "
+                    f"margin-top: 12px; padding: 3px 0px 3px 12px; "
+                    f"border-left: 3px solid {accent1};"
+                )
+
+        if self._current_genres:
+            self._set_genres(self._current_genres)
+
+    def _make_card(self, header_text):
+        """Тёмная карточка-блок с заголовком — общая обёртка для локальных
+        томов/глав, описания и списка глав на MangaDex/MAL, чтобы страница
+        читалась как набор чётких секций, а не как один длинный список."""
+        frame = QFrame()
+        frame.setObjectName("BlockCard")
+        frame.setFrameShape(QFrame.Shape.NoFrame)
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(18, 14, 18, 16)
+        layout.setSpacing(10)
+        header = QLabel(header_text)
+        header.setProperty("_section_header", True)
+        layout.addWidget(header)
+        return frame, layout
+
     def show_for(self, manga_item, search_title=None, status="none", rating=None,
-                 cache_key=None, local_volumes=None):
+                 cache_key=None, local_volumes=None, has_progress=False):
         self.current_manga = manga_item
         self._search_title = search_title or manga_item.display_name
         self._cache_key = cache_key or manga_item.path
         self.set_status_rating(status, rating)
+        self._has_progress = has_progress
+        self.btn_read.setText("↻   Продолжить" if has_progress else "▶   Читать")
         self._populate_volumes(local_volumes or [])
         self._populate_local_chapters()
         self._render_loading()
@@ -252,11 +471,9 @@ class InfoPage(QWidget):
         self._local_volumes = local_volumes
         self.volumes_list.clear()
         if not local_volumes:
-            self.volumes_label.hide()
-            self.volumes_list.hide()
+            self.volumes_frame.hide()
             return
-        self.volumes_label.show()
-        self.volumes_list.show()
+        self.volumes_frame.show()
         current_path = self.current_manga.path if self.current_manga else None
 
         for entry in local_volumes:
@@ -319,8 +536,7 @@ class InfoPage(QWidget):
         self.local_chapters_list.clear()
         self._local_chapters = []
         if self._local_volumes or not self.current_manga:
-            self.local_chapters_label.hide()
-            self.local_chapters_list.hide()
+            self.local_chapters_frame.hide()
             return
         try:
             chapters = get_chapter_list(self.current_manga)
@@ -328,12 +544,10 @@ class InfoPage(QWidget):
             logging.error(f"Ошибка получения списка глав {self.current_manga.path}: {e}")
             chapters = []
         if len(chapters) <= 1:
-            self.local_chapters_label.hide()
-            self.local_chapters_list.hide()
+            self.local_chapters_frame.hide()
             return
         self._local_chapters = chapters
-        self.local_chapters_label.show()
-        self.local_chapters_list.show()
+        self.local_chapters_frame.show()
         for ch in chapters:
             self.local_chapters_list.addItem(ch)
 
@@ -348,6 +562,70 @@ class InfoPage(QWidget):
         rating_key = str(self._current_rating) if self._current_rating else "none"
         self.btn_rating.setText(f"⭐ {RATING_TEXT.get(rating_key, 'Без оценки')}")
 
+    def set_continue_state(self, has_progress):
+        """Переключает текст кнопки чтения без полной перезагрузки страницы —
+        вызывается после "Удалить прогресс"/"Отметить как прочитанное" из
+        контекстного меню, пока пользователь остаётся на этой же странице."""
+        self._has_progress = has_progress
+        self.btn_read.setText("↻   Продолжить" if has_progress else "▶   Читать")
+
+    def _set_genres(self, genres):
+        """Пересобирает плашки жанров — раньше это была одна строка текста
+        через запятую в таблице метаданных, теперь каждый жанр — отдельная
+        цветная плашка (FlowLayout сам переносит их на новую строку)."""
+        self._current_genres = genres
+        while self._genres_flow.count():
+            item = self._genres_flow.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not genres:
+            self.genres_frame.hide()
+            return
+
+        p = self._preset
+        base = QColor(p["accent1"])
+        # Qt QSS rgba() ждёт альфа-канал 0-255, а не 0.0-1.0 как в обычном CSS.
+        alpha = 40
+        for genre in genres:
+            chip = QLabel(html.escape(genre))
+            chip.setStyleSheet(
+                f"background: rgba({base.red()},{base.green()},{base.blue()},{alpha}); "
+                f"color: {p['accent2']}; padding: 5px 14px; border-radius: 12px; "
+                f"font-size: {theme.FONT_CAPTION}px; font-weight: 600;"
+            )
+            self._genres_flow.addWidget(chip)
+        self.genres_frame.show()
+
+    def _set_meta_chips(self, rows):
+        """Пересобирает плашки метаданных (автор/статус/год/...) — раньше
+        это была HTML-таблица внутри едва отличимой от фона плашки. Каждое
+        поле теперь отдельная плашка на градиенте — ярче и контрастнее
+        плашек жанров, чтобы метаданные не сливались с описательным текстом."""
+        while self._meta_flow.count():
+            item = self._meta_flow.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not rows:
+            return
+
+        p = self._preset
+        a1, a2 = QColor(p["accent1"]), QColor(p["accent2"])
+        gradient = (
+            f"qlineargradient(x1:0, y1:0, x2:1, y2:1, "
+            f"stop:0 rgba({a1.red()},{a1.green()},{a1.blue()},110), "
+            f"stop:1 rgba({a2.red()},{a2.green()},{a2.blue()},90))"
+        )
+        for label, value in rows:
+            chip = QLabel(f"{html.escape(label.upper())}: {value}")
+            chip.setTextFormat(Qt.TextFormat.PlainText)
+            chip.setStyleSheet(
+                f"background: {gradient}; color: white; padding: 6px 14px; "
+                f"border-radius: 12px; font-size: {theme.FONT_BODY_SMALL}px; font-weight: 600;"
+            )
+            self._meta_flow.addWidget(chip)
+
     def _show_status_menu(self):
         if not self._cache_key:
             return
@@ -361,6 +639,33 @@ class InfoPage(QWidget):
         menu = QMenu(self)
         _add_rating_actions(menu, self._current_rating, lambda a: self.status_rating_changed.emit(a, self._cache_key))
         menu.exec(self.btn_rating.mapToGlobal(self.btn_rating.rect().bottomLeft()))
+
+    def _show_item_menu(self):
+        """Контекстное меню действий с мангой — то же самое, что в карточке
+        библиотеки, но без статуса/оценки (для них тут отдельные кнопки)."""
+        if not self._cache_key:
+            return
+        menu = QMenu(self)
+        act_reset = QAction("🔄 Удалить прогресс", self)
+        act_read = QAction("✅ Отметить как прочитанное", self)
+        act_open_folder = QAction("📂 Открыть в проводнике", self)
+        act_rename = QAction("✏️ Переименовать", self)
+        act_del = QAction("❌ Удалить с устройства", self)
+
+        act_reset.triggered.connect(lambda: self.menu_action_triggered.emit("reset", self._cache_key))
+        act_read.triggered.connect(lambda: self.menu_action_triggered.emit("mark_read", self._cache_key))
+        act_open_folder.triggered.connect(lambda: self.menu_action_triggered.emit("open_folder", self._cache_key))
+        act_rename.triggered.connect(lambda: self.menu_action_triggered.emit("rename", self._cache_key))
+        act_del.triggered.connect(lambda: self.menu_action_triggered.emit("delete", self._cache_key))
+
+        menu.addAction(act_reset)
+        menu.addAction(act_read)
+        menu.addSeparator()
+        menu.addAction(act_open_folder)
+        menu.addAction(act_rename)
+        menu.addSeparator()
+        menu.addAction(act_del)
+        menu.exec(self.btn_menu.mapToGlobal(self.btn_menu.rect().bottomRight()))
 
     def force_refresh(self):
         if not self.current_manga:
@@ -421,10 +726,11 @@ class InfoPage(QWidget):
                 f"⚠ Не удалось найти мангу автоматически ({message}). "
                 f"Попробуйте «Изменить ссылку» и указать MyAnimeList вручную."
             )
-        self.meta_label.setText("")
+        self._set_meta_chips([])
         self.original_title_label.setText("")
         self.description_label.setText("")
         self.chapters_list.clear()
+        self._set_genres([])
 
     def _show_status_banner(self, text):
         self.status_label.setText(text)
@@ -437,11 +743,28 @@ class InfoPage(QWidget):
     def _render_loading(self):
         self.title_label.setText(self.current_manga.display_name if self.current_manga else "")
         self.original_title_label.setText("")
-        self.meta_label.setText("Загрузка информации...")
+        self._set_meta_chips([])
         self.description_label.setText("")
         self._hide_status_banner()
         self.chapters_list.clear()
+        self._set_genres([])
+        self._set_local_cover_fallback()
+
+    def _set_local_cover_fallback(self):
+        """Обложка из библиотеки (своя кастомная либо первая страница архива)
+        — используется как заглушка на время загрузки с MangaDex/MAL и
+        остаётся, если мангу там не нашли (иначе обложка не отображалась бы
+        вообще, хотя локальная есть)."""
         self.cover_label.setPixmap(QPixmap())
+        if not self.current_manga:
+            return
+        data = get_cover_bytes(self.current_manga.path, is_folder=not self.current_manga.is_archive)
+        if not data:
+            return
+        pixmap = QPixmap()
+        pixmap.loadFromData(data)
+        if not pixmap.isNull():
+            self._set_cover_pixmap(pixmap)
 
     def _render(self, info):
         title = info.get("title_ru") or info.get("title") or (self.current_manga.display_name if self.current_manga else "")
@@ -450,13 +773,13 @@ class InfoPage(QWidget):
         original = info.get("title") or ""
         self.original_title_label.setText(original if original and original != title else "")
 
+        self._set_genres(info.get("genres") or [])
+
         rows = []
         if info.get("author"):
             rows.append(("Автор", html.escape(info["author"])))
         if info.get("artist") and info.get("artist") != info.get("author"):
             rows.append(("Художник", html.escape(info["artist"])))
-        if info.get("genres"):
-            rows.append(("Жанры", html.escape(", ".join(info["genres"]))))
         status = info.get("status")
         if status:
             rows.append(("Статус", STATUS_RU.get(status, status)))
@@ -473,12 +796,7 @@ class InfoPage(QWidget):
             source_label = "MangaDex" if info.get("source") == "mangadex" else "MAL"
             rows.append((f"Глав на {source_label}", str(len(info["chapters"]))))
 
-        html_rows = "".join(
-            f'<tr><td style="color:#999999; padding-right:12px; padding-bottom:4px; vertical-align:top;">{label}:</td>'
-            f'<td style="padding-bottom:4px;">{value}</td></tr>'
-            for label, value in rows
-        )
-        self.meta_label.setText(f"<table>{html_rows}</table>")
+        self._set_meta_chips(rows)
 
         self.description_label.setText(_description_to_html(info.get("description")))
         self._hide_status_banner()
@@ -525,27 +843,14 @@ class InfoPage(QWidget):
                 self._set_cover_pixmap(pixmap)
 
     def _set_cover_pixmap(self, pixmap):
-        self.cover_label.setPixmap(pixmap.scaled(
-            self.cover_label.width(), self.cover_label.height(),
-            Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
-        ))
-
-
-_TAG_BUTTON_STYLE = (
-    "QPushButton { padding: 5px 14px; border-radius: 14px; border: 1px solid #555; font-size: 12px; }"
-    "QPushButton:hover { border-color: #ff9800; }"
-)
+        scaled = scale_to_fill(pixmap, self.cover_label.width(), self.cover_label.height())
+        self.cover_label.setPixmap(round_pixmap(scaled, theme.RADIUS_MD))
 
 
 def _section_header(text):
     label = QLabel(text)
-    label.setStyleSheet("color: #ff9800; font-weight: bold; font-size: 13px; margin-top: 6px;")
+    label.setProperty("_section_header", True)
+    label.setStyleSheet("color: #ff9800; font-weight: bold; font-size: 13px; margin-top: 10px; padding-left: 10px; border-left: 3px solid #ff9800;")
     return label
 
 
-def _separator():
-    line = QFrame()
-    line.setFrameShape(QFrame.Shape.HLine)
-    line.setStyleSheet("color: #444;")
-    line.setFixedHeight(1)
-    return line

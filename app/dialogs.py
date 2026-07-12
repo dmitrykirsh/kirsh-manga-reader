@@ -12,8 +12,10 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 
 from app.constants import APP_VERSION
+from app import theme
 from comx_downloader import ComXDownloadThread
 from group_downloader import GroupDownloadThread, GROUP_DOMAINS
+from mangahub_downloader import MangaHubDownloadThread
 
 MANGALIB_DOMAINS = ("mangalib.me", "mangalib.org", "hentailib.me", "hentailib.org", "shlib.life", "slashlib.me")
 
@@ -117,7 +119,7 @@ def run_auth_with_dialog(parent, loader, site_label, on_finished=None):
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, parent, current_root, current_theme, current_accent):
+    def __init__(self, parent, current_root, current_theme):
         super().__init__(parent)
         self.setWindowTitle("Настройки")
         self.setFixedSize(480, 560)
@@ -152,18 +154,18 @@ class SettingsDialog(QDialog):
         gen_layout.addWidget(btn_browse)
         gen_layout.addSpacing(10)
 
-        gen_layout.addWidget(QLabel("Цветовая тема устройства:"))
+        gen_layout.addWidget(QLabel("Тема оформления:"))
         self.combo_theme = QComboBox()
-        self.combo_theme.addItems(["Тёмная", "Глубокая чёрная", "Тёмно-синяя", "Тёмно-красная", "Тёмно-зелёная", "Тёмно-фиолетовая", "Тёмно-серая"])
+        self.combo_theme.addItems(theme.PRESET_ORDER)
         self.combo_theme.setCurrentText(current_theme)
         gen_layout.addWidget(self.combo_theme)
-        gen_layout.addSpacing(10)
 
-        gen_layout.addWidget(QLabel("Акцентный цвет интерфейса:"))
-        self.combo_accent = QComboBox()
-        self.combo_accent.addItems(["Розовый", "Оранжевый", "Синий", "Зелёный", "Красный", "Фиолетовый"])
-        self.combo_accent.setCurrentText(current_accent)
-        gen_layout.addWidget(self.combo_accent)
+        self.theme_preview = QLabel()
+        self.theme_preview.setFixedHeight(28)
+        self.theme_preview.setStyleSheet("border-radius: 8px;")
+        gen_layout.addWidget(self.theme_preview)
+        self.combo_theme.currentTextChanged.connect(self._update_theme_preview)
+        self._update_theme_preview(current_theme)
         gen_layout.addSpacing(15)
 
         gen_layout.addWidget(QLabel("Обновления:"))
@@ -213,10 +215,10 @@ class SettingsDialog(QDialog):
             "<b>📥 Скачивание манги:</b><br>"
             "• Кнопка <b>📥</b> на верхней панели — открыть диалог скачивания<br>"
             "• Поддерживаются сайты: <b>MangaLib</b>, <b>HentaiLib</b>, <b>SlashLIB/YaoiLib</b>, "
-            "<b>Com-X.life</b>, а также сеть <b>ReadManga/MintManga</b> (SeiManga, Usagi, Zazaza и их зеркала)<br>"
+            "<b>Com-X.life</b>, <b>MangaHub.ru</b>, а также сеть <b>ReadManga/MintManga</b> (SeiManga, Usagi, Zazaza и их зеркала)<br>"
             "• Сайт определяется автоматически по вставленной ссылке<br>"
             "• Для 18+ контента MangaLib/HentaiLib/SlashLIB и для Com-X.life/ReadManga нужна авторизация "
-            "(кнопка в диалоге)<br>"
+            "(кнопка в диалоге). MangaHub.ru авторизация обычно не требуется — она входит в процесс скачивания сама<br>"
             "• Авторизация через браузер: кнопка «✅ Я вошёл» подтверждает вход вручную, "
             "если автоопределение не сработало; «Отмена» останавливает процесс в любой момент<br>"
             "• Для сайтов, которые блокируют автовход — кнопка «📁 Импортировать куки из файла» "
@@ -244,6 +246,8 @@ class SettingsDialog(QDialog):
             "• <b>Com-X.life:</b> куки. В диалоге скачивания нажмите «Авторизоваться»<br>"
             "• <b>ReadManga/MintManga и зеркала:</b> куки. Выберите/введите домен для входа и нажмите "
             "«Авторизоваться»<br>"
+            "• <b>MangaHub.ru:</b> куки, но нужны редко — только для приватного/18+ контента, запрашиваются "
+            "автоматически по ходу скачивания, если понадобятся<br>"
             "• Браузер откроется автоматически, после входа данные сохранятся; кнопка «✅ Я вошёл» "
             "подтверждает вход вручную, если автоопределение не сработало, «Отмена» — прерывает в любой момент<br><br>"
             "<b>📁 Если сайт блокирует автовход через браузер</b> (для сайтов с куки — Com-X.life, "
@@ -272,23 +276,33 @@ class SettingsDialog(QDialog):
         self.tab_widget.addTab(tab_help, "Справка")
         main_layout.addWidget(self.tab_widget)
 
-        ACCENTS_MAP = {
-            "Розовый": "#ff69b4", "Оранжевый": "#ff9800", "Синий": "#0078D7",
-            "Зелёный": "#28a745", "Красный": "#dc3545", "Фиолетовый": "#9c27b0"
-        }
-        accent_hex = ACCENTS_MAP.get(current_accent, "#ff9800")
+        p = theme.get_preset(current_theme)
+        grad = theme.accent_gradient_from(p)
 
         btn_rescan = QPushButton("🔄 Пересканировать")
-        btn_rescan.setStyleSheet(f"background-color: {accent_hex}; color: white; padding: 8px; font-weight: bold; border-radius: 4px;")
+        btn_rescan.setStyleSheet(
+            f"QPushButton {{ background: {grad}; color: white; padding: 10px; font-weight: 700; border-radius: {theme.RADIUS_SM}px; border: none; }}"
+            f"QPushButton:hover {{ background: {p['accent1']}; }}"
+        )
         btn_rescan.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_rescan.clicked.connect(self.trigger_rescan)
         main_layout.addWidget(btn_rescan)
 
         btn_save = QPushButton("Сохранить изменения")
-        btn_save.setStyleSheet("background-color: #28a745; color: white; padding: 8px; font-weight: bold; border-radius: 4px;")
+        btn_save.setStyleSheet(
+            f"QPushButton {{ background: {grad}; color: white; padding: 10px; font-weight: 700; border-radius: {theme.RADIUS_SM}px; border: none; }}"
+            f"QPushButton:hover {{ background: {p['accent1']}; }}"
+        )
         btn_save.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_save.clicked.connect(self.accept)
         main_layout.addWidget(btn_save)
+
+    def _update_theme_preview(self, preset_name):
+        p = theme.get_preset(preset_name)
+        grad = theme.accent_gradient_from(p)
+        self.theme_preview.setStyleSheet(
+            f"background: {grad}; border-radius: 8px;"
+        )
 
     def browse(self):
         folder = QFileDialog.getExistingDirectory(self, "Выберите корневую папку Manga", self.lbl_path.text())
@@ -311,7 +325,7 @@ class DownloadDialog(QDialog):
 
         layout.addWidget(QLabel("Сайт:"))
         self.site_combo = QComboBox()
-        self.site_combo.addItems(["MangaLib", "Com-X.life", "ReadManga/MintManga"])
+        self.site_combo.addItems(["MangaLib", "Com-X.life", "ReadManga/MintManga", "MangaHub.ru"])
         self.site_combo.currentTextChanged.connect(self.on_site_changed)
         layout.addWidget(self.site_combo)
 
@@ -344,7 +358,7 @@ class DownloadDialog(QDialog):
 
         layout.addWidget(QLabel("Ссылка на мангу:"))
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("https://mangalib.me/ru/manga/..., https://com-x.life/... или https://readmanga.live/...")
+        self.url_input.setPlaceholderText("https://mangalib.me/ru/manga/..., https://com-x.life/..., https://readmanga.live/... или https://mangahub.ru/title/...")
         self.url_input.textChanged.connect(self.on_url_changed)
         layout.addWidget(self.url_input)
 
@@ -384,6 +398,8 @@ class DownloadDialog(QDialog):
             self.check_comx_auth_status()
         elif "MangaLib" in site:
             self.check_mangalib_auth_status()
+        elif "MangaHub" in site:
+            self.check_mangahub_auth_status()
         elif is_group:
             self.check_group_auth_status()
 
@@ -401,6 +417,8 @@ class DownloadDialog(QDialog):
                 detected = "MangaLib"
             elif "com-x.life" in domain:
                 detected = "Com-X.life"
+            elif "mangahub.ru" in domain:
+                detected = "MangaHub.ru"
             elif any(d in domain for d in GROUP_DOMAINS) or domain.startswith(("readmanga", "mintmanga", "seimanga")):
                 detected = "ReadManga/MintManga"
 
@@ -455,6 +473,18 @@ class DownloadDialog(QDialog):
             self.auth_button.setText("🔑 Получить токен")
         self.auth_button.show()
 
+    def check_mangahub_auth_status(self):
+        cookies_file = Path(os.environ.get('LOCALAPPDATA', '')) / 'KirshMangaReader' / 'mangahub_cookies.json'
+        if cookies_file.exists():
+            self.auth_status_label.setText("✅ Авторизован (куки есть)")
+            self.auth_status_label.setStyleSheet("color: #28a745; font-size: 11px;")
+            self.auth_button.setText("🔄 Обновить авторизацию")
+        else:
+            self.auth_status_label.setText("ℹ Без авторизации скачивается большинство манг — вход нужен только для приватного/18+ контента")
+            self.auth_status_label.setStyleSheet("color: #888; font-size: 11px;")
+            self.auth_button.setText("🔑 Авторизоваться")
+        self.auth_button.show()
+
     def check_group_auth_status(self):
         domain = self.group_domain_combo.currentText().strip()
         if not domain:
@@ -502,6 +532,16 @@ class DownloadDialog(QDialog):
                 self.check_comx_auth_status()
 
             run_auth_with_dialog(self, loader, "com-x.life", on_finished=on_finished)
+
+        elif "MangaHub" in site:
+            self.auth_button.setEnabled(False)
+            loader = MangaHubDownloadThread("https://mangahub.ru/", "")
+
+            def on_finished(cookies_loaded):
+                self.auth_button.setEnabled(True)
+                self.check_mangahub_auth_status()
+
+            run_auth_with_dialog(self, loader, "mangahub.ru", on_finished=on_finished)
 
         elif "MangaLib" in site:
             QMessageBox.information(self, "Авторизация MangaLib",
