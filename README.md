@@ -5,7 +5,7 @@
 **Версия 3.5**: добавлена поддержка MangaHub.ru для скачивания, полностью переработано оформление интерфейса (см. раздел «Оформление» ниже), исправлен ряд ошибок стабильности и отображения, накопившихся с версии 3.0.
 
 <div align="center">
-<img width="1309" height="992" alt="image" src="https://github.com/user-attachments/assets/cb505aec-4455-4ec9-99eb-767b318d8b78" />
+<img width="1352" height="841" alt="image" src="https://github.com/user-attachments/assets/10236301-1023-4f86-97c1-954b4baa8f61" />
 </div>
 
 ## ✨ Возможности
@@ -22,7 +22,7 @@
 - **Chrome или Edge**: если Chrome не установлен, авторизация автоматически пойдёт через Edge
 
 <div align="center">
-<img width="554" height="437" alt="image" src="https://github.com/user-attachments/assets/99a5f2d9-78ac-4ed1-97d4-8c771e7939f3" />
+<img width="557" height="436" alt="image" src="https://github.com/user-attachments/assets/2782a573-58e7-48fb-be4c-e175ac6990ee" />
 </div>
 
 ### 📂 Чтение манги
@@ -38,7 +38,7 @@
 - **Поиск по библиотеке**: кнопка 🔍 на верхней панели рядом со слайдером размера
 
 <div align="center">
-<img width="1311" height="990" alt="image" src="https://github.com/user-attachments/assets/5f16c127-105b-4877-89c3-214ae44211ab" />
+<img width="1352" height="845" alt="image" src="https://github.com/user-attachments/assets/fc7b6673-fa6c-4bd7-b771-d7e9993cd75c" />
 </div>
 
 ### 🎨 Интерфейс и управление
@@ -49,7 +49,7 @@
 - **Проверка обновлений**: приложение само подскажет, когда на GitHub выйдет новая версия
 
 <div align="center">
-<img width="1310" height="993" alt="image" src="https://github.com/user-attachments/assets/2d54379e-9f12-4aac-be10-ea64df6062ad" />
+<img width="1488" height="981" alt="image" src="https://github.com/user-attachments/assets/9e34db45-06e4-4e7e-8b0f-91853ad37c3a" />
 </div>
 
 ### 🎨 Оформление
