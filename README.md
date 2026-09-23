@@ -1,5 +1,9 @@
 # 📚 Kirsh Manga Reader
 
+[![GitHub release](https://img.shields.io/github/v/release/dmitrykirsh/kirsh-manga-reader?label=release)](https://github.com/dmitrykirsh/kirsh-manga-reader/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/dmitrykirsh/kirsh-manga-reader/total)](https://github.com/dmitrykirsh/kirsh-manga-reader/releases)
+[![Stars](https://img.shields.io/github/stars/dmitrykirsh/kirsh-manga-reader?style=social)](https://github.com/dmitrykirsh/kirsh-manga-reader)
+
 Легкий, быстрый и стильный нативный ридер манги для Windows. Предназначен для комфортного чтения локальных коллекций манги в форматах папок и архивов, с автоматическим отслеживанием прогресса, **встроенным загрузчиком манги с сайтов** и **страницей информации о манге с автоматическим подтягиванием данных с MangaDex**.
 
 **Интерфейс полностью переписан на QML**: левая рейка, новая страница манги и читалка (см. раздел «Оформление» ниже). Загрузчики, MangaDex/MAL, формат конфига и кэша — прежние.
