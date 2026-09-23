@@ -1,0 +1,29 @@
+module KirshUi
+singleton Theme 1.0 Theme.qml
+singleton Motion 1.0 Motion.qml
+singleton PopupTracker 1.0 PopupTracker.qml
+Icon 1.0 Icon.qml
+FocusRing 1.0 FocusRing.qml
+AppButton 1.0 AppButton.qml
+IconButton 1.0 IconButton.qml
+Chip 1.0 Chip.qml
+Segmented 1.0 Segmented.qml
+SearchField 1.0 SearchField.qml
+Field 1.0 Field.qml
+AppSlider 1.0 AppSlider.qml
+Toggle 1.0 Toggle.qml
+DragScroll 1.0 DragScroll.qml
+Meter 1.0 Meter.qml
+Stars 1.0 Stars.qml
+Modal 1.0 Modal.qml
+ContextMenu 1.0 ContextMenu.qml
+ToastHost 1.0 ToastHost.qml
+EmptyState 1.0 EmptyState.qml
+PageSlot 1.0 PageSlot.qml
+RoundedImage 1.0 RoundedImage.qml
+NavRail 1.0 NavRail.qml
+NavItem 1.0 NavItem.qml
+MangaCard 1.0 MangaCard.qml
+ConfirmDialog 1.0 ConfirmDialog.qml
+PromptDialog 1.0 PromptDialog.qml
+AppScrollBar 1.0 AppScrollBar.qml

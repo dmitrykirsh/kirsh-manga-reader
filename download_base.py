@@ -20,6 +20,10 @@ class BaseDownloadThread(QThread):
     finished = pyqtSignal(str, str)
     error = pyqtSignal(str)
     need_auth = pyqtSignal()
+    # Некритичное предупреждение при частичном успехе (часть глав не скачалась,
+    # но остальное скачано и finished всё равно будет отправлен) — в отличие
+    # от error, не отменяет скачивание и не блокирует finished.
+    warning = pyqtSignal(str)
 
     def __init__(self, url, dest_root, output_format="Папки с картинками"):
         super().__init__()

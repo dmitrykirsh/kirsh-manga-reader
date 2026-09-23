@@ -1,0 +1,6 @@
+module Pages
+LibraryPage 1.0 LibraryPage.qml
+InfoPage 1.0 InfoPage.qml
+ReaderPage 1.0 ReaderPage.qml
+ChapterRow 1.0 ChapterRow.qml
+VolumeRow 1.0 VolumeRow.qml

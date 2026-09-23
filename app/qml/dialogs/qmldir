@@ -1,0 +1,6 @@
+module Dialogs
+DialogHub 1.0 DialogHub.qml
+SettingsDialog 1.0 SettingsDialog.qml
+DownloadDialog 1.0 DownloadDialog.qml
+AuthDialog 1.0 AuthDialog.qml
+CoverDialog 1.0 CoverDialog.qml

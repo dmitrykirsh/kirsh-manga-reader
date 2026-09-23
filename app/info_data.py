@@ -43,6 +43,20 @@ def clear_cached_info(item_path):
             logging.error(f"Не удалось удалить кэш информации о манге {path}: {e}")
 
 
+def rename_cached_info(old_item_path, new_item_path):
+    """Переносит кэш инфы (ключ — md5 пути) на новый путь после переименования
+    на диске — иначе кэш остаётся привязан к старому пути и следующий вход в
+    мангу выглядит как промах кэша, вызывая повторный автозапрос к MangaDex."""
+    old_path = _cache_path(old_item_path)
+    new_path = _cache_path(new_item_path)
+    if old_path == new_path or not os.path.exists(old_path):
+        return
+    try:
+        os.replace(old_path, new_path)
+    except Exception as e:
+        logging.error(f"Не удалось перенести кэш информации о манге {old_path} -> {new_path}: {e}")
+
+
 def _pick_description(desc_dict):
     if not desc_dict:
         return ""

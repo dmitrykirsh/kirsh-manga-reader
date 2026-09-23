@@ -358,7 +358,11 @@ class GroupDownloadThread(BaseDownloadThread):
             manga_path = Path(self.dest_root) / self.manga_name
             manga_path.mkdir(parents=True, exist_ok=True)
 
-            chapter_folders = []
+            # По тому, а не одним файлом на всю мангу — как у MangaLib (см. pack_to_cbz там):
+            # том нужен уже для того, чтобы разложить главы по папкам, поэтому группируем
+            # заодно с самим скачиванием, а не отдельным проходом после него.
+            volumes = {}
+            failed_chapters = []
             total = len(self.links)
             for idx, link in enumerate(self.links, 1):
                 if self._cancel_requested:
@@ -372,21 +376,39 @@ class GroupDownloadThread(BaseDownloadThread):
                 full_url = self.url.rsplit('/', 1)[0] + link
                 chapter_folder = manga_path / f"vol{vol}" / ch
                 chapter_folder.mkdir(parents=True, exist_ok=True)
-                chapter_folders.append(chapter_folder)
 
                 saved = self._download_chapter_pages(full_url, chapter_folder)
                 if saved == 0:
+                    # Раньше это только логировалось, а скачивание всё равно считалось
+                    # успешным — в библиотеке появлялась пустая глава/CBZ без единой
+                    # страницы, и пользователь узнавал об этом только открыв её.
                     logging.error(f"Глава {chapter_name}: не удалось скачать ни одной страницы")
+                    failed_chapters.append(chapter_name)
+                    shutil.rmtree(chapter_folder, ignore_errors=True)
+                else:
+                    volumes.setdefault(vol, []).append(chapter_folder)
+
+            if not volumes:
+                shutil.rmtree(manga_path, ignore_errors=True)
+                self.error.emit("Не удалось скачать ни одной страницы ни в одной главе. Возможно, ссылка "
+                                 "устарела или сайт требует повторного входа в аккаунт — войдите заново "
+                                 "и повторите скачивание.")
+                return
+
+            if failed_chapters:
+                sample = "; ".join(failed_chapters[:5]) + ("…" if len(failed_chapters) > 5 else "")
+                self.warning.emit(f"Не скачалось {len(failed_chapters)} из {total} глав ({sample}). "
+                                   "Остальное скачано — попробуйте повторить скачивание позже для недостающих глав.")
 
             if self.output_format == "CBZ (архив)":
                 self.status.emit("Упаковка в CBZ...")
-                self.pack_chapters_to_cbz(
-                    manga_path.parent / f"{self.manga_name}.cbz",
-                    chapter_folders,
-                    lambda folder: f"{folder.parent.name}/{folder.name}"
-                )
-                if manga_path.exists():
-                    shutil.rmtree(manga_path, ignore_errors=True)
+                for vol, folders in volumes.items():
+                    self.pack_chapters_to_cbz(
+                        manga_path / f"vol{vol}.cbz",
+                        folders,
+                        lambda folder: f"Глава {folder.name}"
+                    )
+                    shutil.rmtree(manga_path / f"vol{vol}", ignore_errors=True)
 
             self.finished.emit(self.manga_name, str(manga_path))
 
