@@ -50,7 +50,10 @@ except ImportError:
     RAR_SUPPORT = False
 
 VALID_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp', '.bmp')
-ARCHIVE_EXTENSIONS = ('.zip', '.cbz', '.rar', '.cbr')
+# EPUB и PDF — книги, собранные загрузчиком (book_export.py): для библиотеки это
+# такие же одиночные файлы манги, как CBZ, страницы из них достаёт MangaItem.
+BOOK_EXTENSIONS = ('.epub', '.pdf')
+ARCHIVE_EXTENSIONS = ('.zip', '.cbz', '.rar', '.cbr') + BOOK_EXTENSIONS
 
 APP_VERSION = "3.6"
 GITHUB_REPO = "dmitrykirsh/kirsh-manga-reader"

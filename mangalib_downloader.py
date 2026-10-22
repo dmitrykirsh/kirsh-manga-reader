@@ -6,17 +6,18 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import logging
 import json
+import shutil
 from pathlib import Path
+from urllib.parse import urlparse
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
 from download_base import BaseDownloadThread
 
 class MangaLibDownloadThread(BaseDownloadThread):
-    def __init__(self, url, dest_root, token="", output_format="Папки с картинками", chapter_range=None):
-        super().__init__(url, dest_root, output_format=output_format)
+    def __init__(self, url, dest_root, token="", output_format="Папки с картинками", chapter_filter=None):
+        super().__init__(url, dest_root, output_format=output_format, chapter_filter=chapter_filter)
         self.token = token
-        self.chapter_range = chapter_range
 
         if 'hentailib' in url:
             self.api_url = "https://hapi.hentaicdn.org/api/manga"
@@ -32,109 +33,163 @@ class MangaLibDownloadThread(BaseDownloadThread):
             self.site_id = "2"
         else:
             self.api_url = "https://api.cdnlibs.org/api/manga"
-            self.img_domains = [
-                "img3.cdnlibs.org",
-                "img4.cdnlibs.org",
-                "img5.cdnlibs.org",
-                "img6.cdnlibs.org",
-                "img7.cdnlibs.org",
-                "img8.cdnlibs.org",
-                "img3.mixlib.me",
-            ]
+            # Запасной список на случай, если /api/constants недоступен (см. _load_image_servers).
+            self.img_domains = ["img3.cdnlibs.org", "img2.imglib.info"]
             self.site_id = "1"
-    
+
+    # Порядок серверов как в настройках читалки сайта; "crop" — обрезанные страницы, не берём.
+    _SERVER_PRIORITY = ("download", "compress", "main", "secondary")
+
+    def _load_image_servers(self, headers):
+        """Актуальные серверы картинок из /api/constants. Сайт периодически меняет домены
+        (img4–img8.cdnlibs.org и img3.mixlib.me уже не существуют), а на мёртвых доменах
+        каждая страница сначала ждала ошибки DNS/503 и только потом шла на рабочий."""
+        try:
+            resp = self._api_get(self.api_url.rsplit('/', 1)[0] + "/constants", headers,
+                                 params={"fields[]": "imageServers"})
+            servers = resp.json().get('data', {}).get('imageServers', []) if resp.status_code == 200 else []
+        except Exception as e:
+            logging.warning(f"MangaLib: не удалось получить список серверов картинок: {e}")
+            return
+        site = int(self.site_id)
+        hosts = []
+        for server_id in self._SERVER_PRIORITY:
+            for s in servers:
+                host = urlparse(s.get('url') or '').netloc
+                if s.get('id') == server_id and site in (s.get('site_ids') or []) and host and host not in hosts:
+                    hosts.append(host)
+        if hosts:
+            self.img_domains = hosts + [d for d in self.img_domains if d not in hosts]
+            logging.info(f"MangaLib: серверы картинок {self.img_domains}")
+
     def pack_to_cbz(self, manga_folder, volume_name, chapters_in_volume):
         """Упаковывает том в CBZ с сохранением структуры глав внутри"""
         import shutil
 
         chapter_folders = [manga_folder / volume_name / chapter for chapter in chapters_in_volume]
+        if not any(f.exists() for f in chapter_folders):
+            # Ни одна глава тома не скачалась — пустой CBZ не нужен, а папки тома
+            # может и не быть (раньше rmtree на ней обрывал всё скачивание).
+            return None
         cbz_path = self.pack_chapters_to_cbz(
             manga_folder / f"{volume_name}.cbz",
             chapter_folders,
             lambda folder: f"Глава {folder.name}"
         )
-        shutil.rmtree(manga_folder / volume_name)
+        self.remove_empty_dirs(manga_folder / volume_name)
         return cbz_path
+
+    def _api_get(self, url, headers, params=None):
+        """GET к API с повтором при 429/5xx: API ограничивает частоту запросов, и раньше
+        глава с ответом 429 просто молча пропускалась."""
+        resp = None
+        for attempt in range(5):
+            resp = requests.get(url, params=params, headers=headers, timeout=15)
+            if resp.status_code != 429 and resp.status_code < 500:
+                return resp
+            wait = resp.headers.get('Retry-After', '')
+            time.sleep(min(float(wait), 30) if wait.isdigit() else 2 * (attempt + 1))
+        return resp
+
+    def _slug(self):
+        m = re.search(r'/manga/([^/?#]+)', self.url)
+        return re.sub(r'[^a-zA-Z0-9\-_]', '', m.group(1)) if m else ''
+
+    def _headers(self):
+        headers = {
+            "Origin": "https://mangalib.me",
+            "Referer": "https://mangalib.me/",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "cross-site",
+            "Site-Id": self.site_id,
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+        }
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        return headers
+
+    def _fetch_chapters(self, slug, headers):
+        """(HTTP-статус, [{'key', 'vol', 'num', 'name', 'title'}]) — главы от первой к последней."""
+        resp = self._api_get(f"{self.api_url}/{slug}/chapters", headers)
+        if resp.status_code != 200:
+            return resp.status_code, []
+        data = resp.json()
+        chapters_list = []
+        if isinstance(data, dict):
+            if isinstance(data.get('data'), list):
+                chapters_list = data['data']
+            elif isinstance(data.get('chapters'), list):
+                chapters_list = data['chapters']
+        chapters = []
+        for ch in chapters_list:
+            if not isinstance(ch, dict):
+                continue
+            vol = str(ch.get('volume', '0'))
+            num = str(ch.get('number', '0'))
+            chapters.append({
+                'key': f"{vol}|{num}",
+                'vol': vol,
+                'num': num,
+                'name': f"Vol.{vol} Ch.{num}",
+                'title': (ch.get('name') or '').strip(),
+            })
+        return 200, chapters
+
+    def list_chapters(self):
+        slug = self._slug()
+        if not slug:
+            raise ValueError("Нужна ссылка на страницу манги вида https://mangalib.me/ru/manga/…")
+        status, chapters = self._fetch_chapters(slug, self._headers())
+        if status != 200:
+            raise RuntimeError(f"сайт вернул HTTP {status}" + ("" if self.token else " — возможно, нужен вход"))
+        if not chapters and not self.token:
+            raise RuntimeError("глав не видно без входа — войдите в аккаунт MangaLib")
+        return [{"key": c['key'],
+                 "label": f"Том {c['vol']} · Глава {c['num']}" + (f" — {c['title']}" if c['title'] else ""),
+                 "number": c['num']} for c in chapters]
 
     def run(self):
         try:
             self.status.emit("Получение информации...")
             
-            slug = self.url.split('/manga/')[1].split('/')[0].split('?')[0]
-            slug = re.sub(r'[^a-zA-Z0-9\-_]', '', slug)
-            
-            headers = {
-                "Origin": "https://mangalib.me",
-                "Referer": "https://mangalib.me/",
-                "Sec-Fetch-Dest": "empty",
-                "Sec-Fetch-Mode": "cors",
-                "Sec-Fetch-Site": "cross-site",
-                "Site-Id": self.site_id,
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "application/json",
-            }
-            if self.token:
-                headers["Authorization"] = f"Bearer {self.token}"
-            
-            resp = requests.get(f"{self.api_url}/{slug}", headers=headers, timeout=10)
+            slug = self._slug()
+            if not slug:
+                self.error.emit("Нужна ссылка на страницу манги вида https://mangalib.me/ru/manga/…")
+                return
+
+            headers = self._headers()
+            resp = self._api_get(f"{self.api_url}/{slug}", headers)
             if resp.status_code != 200:
                 self.error.emit(f"Манга не найдена (HTTP {resp.status_code}). Возможно, нужен токен.")
                 return
-            
+
+            self._load_image_servers(headers)
+
             manga_name = resp.json().get('data', {}).get('name', 'Unknown')
             manga_name = re.sub(r'[\\/*?:"<>|]', '_', manga_name)
             manga_name = re.sub(r'[×★✓✔✘®™©]', '_', manga_name)
-            
-            resp = requests.get(f"{self.api_url}/{slug}/chapters", headers=headers, timeout=10)
-            if resp.status_code != 200:
-                self.error.emit(f"Не удалось получить главы (HTTP {resp.status_code}). Возможно, нужен токен.")
+
+            status, all_chapters = self._fetch_chapters(slug, headers)
+            if status != 200:
+                self.error.emit(f"Не удалось получить главы (HTTP {status}). Возможно, нужен токен.")
                 return
-            
-            data = resp.json()
-            
-            chapters_list = []
-            if isinstance(data, dict):
-                if 'data' in data and isinstance(data['data'], list):
-                    chapters_list = data['data']
-                elif 'chapters' in data and isinstance(data['chapters'], list):
-                    chapters_list = data['chapters']
-            
-            if not chapters_list:
+            if not all_chapters:
                 if not self.token:
-                    self.error.emit("Для этой манги нужна авторизация. Введите токен в настройках.")
+                    self.error.emit("Для этой манги нужна авторизация. Войдите в аккаунт MangaLib.")
                 else:
                     self.error.emit("Не удалось найти главы")
                 return
-            
-            chapters = []
-            for ch in chapters_list:
-                if not isinstance(ch, dict):
-                    continue
-                vol = str(ch.get('volume', '0'))
-                num = str(ch.get('number', '0'))
-                chapters.append({
-                    'vol': vol,
-                    'num': num,
-                    'name': f"Vol.{vol} Ch.{num}"
-                })
-            
-            if self.chapter_range and self.output_format != "CBZ (архив)":
-                start, end = self.chapter_range
-                filtered = []
-                for ch in chapters:
-                    ch_num = int(ch['num'])
-                    if start is not None and ch_num < start:
-                        continue
-                    if end is not None and ch_num > end:
-                        continue
-                    filtered.append(ch)
-                chapters = filtered
-                self.status.emit(f"Отфильтровано глав: {len(chapters)}")
-            
+
+            chapters = self.filter_chapters(all_chapters, lambda c: c['num'], lambda c: c['key'])
+            if self.chapter_filter:
+                self.status.emit(f"Выбрано глав: {len(chapters)}")
             if not chapters:
-                self.error.emit("Главы не найдены")
+                self.error.emit(f"Не найдено: {self.describe_filter()}. На сайте главы "
+                                f"{all_chapters[0]['num']}–{all_chapters[-1]['num']}.")
                 return
-            
+
             volumes = {}
             for ch in chapters:
                 vol = ch['vol']
@@ -145,29 +200,36 @@ class MangaLibDownloadThread(BaseDownloadThread):
             manga_path = Path(self.dest_root) / manga_name
             total_volumes = len(volumes)
             current_volume = 0
-            
+            failed_chapters = []
+            saved_chapters = 0
+
             for vol_num, chapters_in_vol in volumes.items():
                 current_volume += 1
                 self.status.emit(f"Том {vol_num} ({current_volume}/{total_volumes})")
-                
+
                 for idx, ch in enumerate([c for c in chapters if c['vol'] == vol_num], 1):
+                    if self._cancel_requested:
+                        self.status.emit("Скачивание отменено")
+                        return
                     total_in_vol = len(chapters_in_vol)
-                    
+
                     self.progress.emit(idx, total_in_vol, ch['name'])
-                    
+
                     self.status.emit(f"Скачивание: {ch['name']}")
-                    
-                    resp = requests.get(f"{self.api_url}/{slug}/chapter",
-                                        params={'volume': ch['vol'], 'number': ch['num']},
-                                        headers=headers, timeout=10)
-                    
+
+                    resp = self._api_get(f"{self.api_url}/{slug}/chapter", headers,
+                                         params={'volume': ch['vol'], 'number': ch['num']})
+
                     if resp.status_code != 200:
+                        logging.error(f"Глава {ch['name']}: API вернул HTTP {resp.status_code}")
+                        failed_chapters.append(ch['name'])
                         continue
-                    
+
                     pages = resp.json().get('data', {}).get('pages', [])
-                    
+
                     if not pages:
                         logging.error(f"Глава {ch['name']}: API вернул пустой список страниц. Ответ: {resp.text[:500]}")
+                        failed_chapters.append(ch['name'])
                         continue
                     
                     folder = manga_path / f"vol{vol_num}" / ch['num']
@@ -235,6 +297,10 @@ class MangaLibDownloadThread(BaseDownloadThread):
                                         (folder / f"{j:03d}{ext}").write_bytes(img_resp.content)
                                         saved_count += 1
                                         downloaded = True
+                                        if domain != self.img_domains[0]:
+                                            # Следующие страницы сразу с рабочего сервера.
+                                            self.img_domains.remove(domain)
+                                            self.img_domains.insert(0, domain)
                                         break
                                     else:
                                         logging.warning(f"HTTP {img_resp.status_code} на {img_url}")
@@ -248,22 +314,31 @@ class MangaLibDownloadThread(BaseDownloadThread):
                             time.sleep(0.2)
                     
                     if saved_count == 0:
+                        # Пустая папка главы в библиотеке выглядела бы как скачанная глава.
                         logging.error(f"Глава {ch['name']}: скачано 0 из {len(pages)} страниц")
-                    
+                        failed_chapters.append(ch['name'])
+                        shutil.rmtree(folder, ignore_errors=True)
+                    else:
+                        saved_chapters += 1
+
                     time.sleep(0.5)
-                
+
                 if self.output_format == "CBZ (архив)":
                     self.status.emit(f"Упаковка тома {vol_num} в CBZ...")
                     self.pack_to_cbz(manga_path, f"vol{vol_num}", chapters_in_vol)
-            
-            if self.output_format != "CBZ (архив)":
-                self.finished.emit(manga_name, str(manga_path))
-            else:
-                remaining_folders = [f for f in manga_path.iterdir() if f.is_dir()]
-                if not remaining_folders:
-                    self.finished.emit(manga_name, str(manga_path))
-                else:
-                    self.finished.emit(manga_name, str(manga_path))
+
+            if saved_chapters == 0:
+                self.remove_empty_dirs(manga_path)
+                self.error.emit("Не удалось скачать ни одной главы. Возможно, манга доступна только "
+                                "после входа — получите токен и повторите скачивание.")
+                return
+
+            if failed_chapters:
+                sample = "; ".join(failed_chapters[:5]) + ("…" if len(failed_chapters) > 5 else "")
+                self.warning.emit(f"Не скачалось {len(failed_chapters)} из {len(chapters)} глав ({sample}). "
+                                  "Остальное скачано — повторите скачивание позже для недостающих глав.")
+
+            self.finished.emit(manga_name, str(manga_path))
             
         except Exception as e:
             self.error.emit(str(e))

@@ -8,6 +8,7 @@ Item {
     property string placeholder: "Поиск по названию"
     property alias inputFocus: input.activeFocus
     signal escaped()
+    signal accepted()
     function focusInput() { input.forceActiveFocus(); input.selectAll() }
 
     implicitHeight: Theme.hit
@@ -45,6 +46,7 @@ Item {
         clip: true
         selectByMouse: true
         Keys.onEscapePressed: { if (text.length) text = ""; else root.escaped() }
+        onAccepted: root.accepted()
         Text {
             visible: !input.text.length
             anchors.verticalCenter: parent.verticalCenter

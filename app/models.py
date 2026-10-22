@@ -4,7 +4,10 @@ import zipfile
 import hashlib
 import logging
 import threading
+import posixpath
+import xml.etree.ElementTree as ET
 from pathlib import Path
+from urllib.parse import unquote
 
 from natsort import natsorted
 
@@ -15,6 +18,97 @@ if RAR_SUPPORT:
     import rarfile
 
 from app.constants import COVERS_DIR
+
+
+# Размер отрисовки страницы PDF. У страниц, собранных book_export, размер в
+# пунктах равен размеру исходной картинки в пикселях, так что масштаб 1.0 даёт
+# исходное разрешение; мелкие (A4 и т.п.) страницы чужих PDF дотягиваем до
+# PDF_MIN_WIDTH, чтобы они не были мыльными.
+PDF_MIN_WIDTH = 1400
+PDF_MAX_WIDTH = 2400
+PDF_MAX_PIXELS = 12_000_000
+
+
+def _xml_attr(el, name):
+    """Значение атрибута без учёта пространства имён (src, xlink:href и т.п.)."""
+    for k, v in el.attrib.items():
+        if k == name or k.endswith('}' + name):
+            return v
+    return None
+
+
+def _xml_tag(el):
+    return el.tag.rsplit('}', 1)[-1]
+
+
+def _zip_join(base_dir, href):
+    href = unquote(href.split('#', 1)[0])
+    return posixpath.normpath(posixpath.join(base_dir, href)) if href else ''
+
+
+def read_epub_pages(z):
+    """Картинки EPUB (имена внутри zip) в порядке spine из content.opf.
+
+    Рассчитано на fixed-layout мангу, как её собирает book_export.py: с каждой
+    XHTML-страницы spine берутся её <img>/<svg:image>; картинка, стоящая прямо
+    в spine, тоже считается страницей. У текстовых книг картинок-страниц нет —
+    для них список пустой, и библиотека такой файл просто пропускает."""
+    names = set(z.namelist())
+    container = ET.fromstring(z.read('META-INF/container.xml'))
+    opf_path = next((_xml_attr(el, 'full-path') for el in container.iter()
+                     if _xml_tag(el) == 'rootfile' and _xml_attr(el, 'full-path')), None)
+    if not opf_path:
+        return []
+    opf_dir = posixpath.dirname(opf_path)
+    opf = ET.fromstring(z.read(opf_path))
+    manifest, spine = {}, []
+    for el in opf.iter():
+        tag = _xml_tag(el)
+        if tag == 'item' and el.get('id') and el.get('href'):
+            manifest[el.get('id')] = (_zip_join(opf_dir, el.get('href')), el.get('media-type', ''))
+        elif tag == 'itemref' and el.get('idref'):
+            spine.append(el.get('idref'))
+
+    pages, seen = [], set()
+
+    def add(name):
+        if name in names and name.lower().endswith(VALID_EXTENSIONS) and name not in seen:
+            seen.add(name)
+            pages.append(name)
+
+    for idref in spine:
+        href, mime = manifest.get(idref, (None, ''))
+        if not href or href not in names:
+            continue
+        if mime.startswith('image/'):
+            add(href)
+            continue
+        try:
+            doc = ET.fromstring(z.read(href))
+        except ET.ParseError as e:
+            logging.error(f"EPUB: не удалось разобрать {href}: {e}")
+            continue
+        base = posixpath.dirname(href)
+        for el in doc.iter():
+            tag = _xml_tag(el)
+            src = _xml_attr(el, 'src') if tag == 'img' else _xml_attr(el, 'href') if tag == 'image' else None
+            if src:
+                add(_zip_join(base, src))
+    return pages
+
+
+def _pdf_page_name(i):
+    return f"{i + 1:05d}.pdfpage"
+
+
+def _pdf_render_size(point_size):
+    w, h = point_size.width(), point_size.height()
+    if w <= 0 or h <= 0:
+        return 0, 0
+    k = min(max(w, PDF_MIN_WIDTH), PDF_MAX_WIDTH) / w
+    if w * h * k * k > PDF_MAX_PIXELS:
+        k = (PDF_MAX_PIXELS / (w * h)) ** 0.5
+    return max(1, round(w * k)), max(1, round(h * k))
 
 
 def get_custom_cover_path(item_path):
@@ -113,6 +207,8 @@ class MangaItem:
         self.display_name = os.path.splitext(self.name)[0] if path.lower().endswith(ARCHIVE_EXTENSIONS) else self.name
         self.is_archive = path.lower().endswith(ARCHIVE_EXTENSIONS)
         self.pages = []
+        # 'zip' | 'rar' | 'epub' | 'pdf'. EPUB читается как zip, но порядок
+        # страниц берётся из spine, а не естественной сортировкой имён.
         self.real_archive_type = None
         self._archive_handle = None
         # Страницы читаются как из основного потока (при листании), так и из
@@ -126,7 +222,10 @@ class MangaItem:
     def load_pages_list(self):
         if self.path in MangaItem.GLOBAL_CACHE:
             self.pages = MangaItem.GLOBAL_CACHE[self.path]
-            if self.path.lower().endswith(('.zip', '.cbz')): self.real_archive_type = 'zip'
+            low = self.path.lower()
+            if low.endswith('.epub'): self.real_archive_type = 'epub'
+            elif low.endswith('.pdf'): self.real_archive_type = 'pdf'
+            elif low.endswith(('.zip', '.cbz')): self.real_archive_type = 'zip'
             else: self.real_archive_type = 'rar'
             return
 
@@ -135,6 +234,29 @@ class MangaItem:
                 self.pages = [f for f in os.listdir(self.path) if f.lower().endswith(VALID_EXTENSIONS)]
             except Exception: self.pages = []
             self.pages = natsorted(self.pages)
+            return
+
+        if self.path.lower().endswith('.epub'):
+            try:
+                with zipfile.ZipFile(self.path, 'r') as z:
+                    self.pages = read_epub_pages(z)
+                self.real_archive_type = 'epub'
+                if not self.pages:
+                    logging.info(f"EPUB без страниц-картинок (текстовая книга?) пропущен: {self.path}")
+            except Exception as e:
+                logging.error(f"Ошибка открытия EPUB {self.path}: {e}")
+            # Порядок задаёт spine — natsort здесь его бы сломал.
+            if self.pages:
+                MangaItem.GLOBAL_CACHE[self.path] = self.pages
+            return
+        if self.path.lower().endswith('.pdf'):
+            doc = self._load_pdf()
+            if doc is not None:
+                self.pages = [_pdf_page_name(i) for i in range(doc.pageCount())]
+                doc.close()
+                self.real_archive_type = 'pdf'
+            if self.pages:
+                MangaItem.GLOBAL_CACHE[self.path] = self.pages
             return
 
         if self.path.lower().endswith(('.zip', '.cbz')):
@@ -163,12 +285,60 @@ class MangaItem:
         if self.pages:
             MangaItem.GLOBAL_CACHE[self.path] = self.pages
 
+    def _load_pdf(self):
+        from PyQt6.QtPdf import QPdfDocument
+        doc = QPdfDocument(None)
+        err = doc.load(self.path)
+        if err != QPdfDocument.Error.None_ or doc.pageCount() <= 0:
+            logging.error(f"Ошибка открытия PDF {self.path}: {err}")
+            doc.close()
+            return None
+        return doc
+
+    def get_page_size(self, index):
+        """(ширина, высота) страницы без её декодирования — пока только для PDF, где
+        получить байты страницы значит отрисовать её целиком. None — неизвестно."""
+        if self.real_archive_type != 'pdf' or not (0 <= index < len(self.pages)):
+            return None
+        with self._lock:
+            if not self._archive_handle: self.open_archive()
+            if not self._archive_handle: return None
+            w, h = _pdf_render_size(self._archive_handle.pagePointSize(index))
+            return (w, h) if w and h else None
+
+    def _render_pdf_page(self, index):
+        """Отрисовка страницы PDF в JPEG-байты (дальше они идут тем же путём, что и картинки из архивов)."""
+        from PyQt6.QtCore import QBuffer, QByteArray, QIODevice, QSize
+        from PyQt6.QtGui import QImage, QPainter
+        w, h = _pdf_render_size(self._archive_handle.pagePointSize(index))
+        if not w or not h:
+            return None
+        img = self._archive_handle.render(index, QSize(w, h))
+        if img.isNull():
+            return None
+        # Фон страницы PDF бывает прозрачным — подкладываем белый, как любая PDF-читалка.
+        if img.hasAlphaChannel():
+            flat = QImage(img.size(), QImage.Format.Format_RGB32)
+            flat.fill(0xFFFFFFFF)
+            p = QPainter(flat)
+            p.drawImage(0, 0, img)
+            p.end()
+            img = flat
+        buf = QByteArray()
+        dev = QBuffer(buf)
+        dev.open(QIODevice.OpenModeFlag.WriteOnly)
+        img.save(dev, "JPEG", 92)
+        dev.close()
+        return bytes(buf)
+
     def open_archive(self):
         if not self.is_archive or self._archive_handle: return
         with self._lock:
             if self._archive_handle: return
             try:
-                if self.real_archive_type == 'zip':
+                if self.real_archive_type == 'pdf':
+                    self._archive_handle = self._load_pdf()
+                elif self.real_archive_type in ('zip', 'epub'):
                     self._archive_handle = zipfile.ZipFile(self.path, 'r')
                 elif self.real_archive_type == 'rar' and RAR_SUPPORT:
                     self._archive_handle = rarfile.RarFile(self.path, 'r')
@@ -192,7 +362,10 @@ class MangaItem:
                 if self.is_archive:
                     if not self._archive_handle: self.open_archive()
                     if self._archive_handle:
-                        data = self._archive_handle.read(page_name)
+                        if self.real_archive_type == 'pdf':
+                            data = self._render_pdf_page(index)
+                        else:
+                            data = self._archive_handle.read(page_name)
                         if index == 0: COVER_CACHE[self.path] = data
                         return data
                 else:
