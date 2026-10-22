@@ -55,6 +55,48 @@ def _launch_edge():
     return webdriver.Edge(service=EdgeService(driver_path), options=options)
 
 
+def _mask_headless(driver):
+    """Headless Chrome/Edge подписывается как «HeadlessChrome» — защита сайтов на это реагирует."""
+    ua = driver.execute_script("return navigator.userAgent").replace("HeadlessChrome", "Chrome")
+    driver.execute_cdp_cmd("Network.setUserAgentOverride", {"userAgent": ua})
+    return driver
+
+
+def launch_headless_browser():
+    """Браузер без окна для фоновых задач (поиск на сайтах за JS-проверкой). Chrome, затем Edge."""
+    from selenium import webdriver
+    errors = []
+    try:
+        from selenium.webdriver.chrome.options import Options as ChromeOptions
+        from selenium.webdriver.chrome.service import Service as ChromeService
+        options = ChromeOptions()
+        options.add_argument("--headless=new")
+        options.add_argument("--window-size=1280,900")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        driver_path = get_chrome_driver_path()
+        if not driver_path:
+            from webdriver_manager.chrome import ChromeDriverManager
+            driver_path = ChromeDriverManager().install()
+        return _mask_headless(webdriver.Chrome(service=ChromeService(driver_path), options=options))
+    except Exception as e:
+        errors.append(f"Chrome: {e}")
+        logging.warning(f"Не удалось запустить Chrome без окна, пробую Edge: {e}")
+    try:
+        from selenium.webdriver.edge.options import Options as EdgeOptions
+        from selenium.webdriver.edge.service import Service as EdgeService
+        from webdriver_manager.microsoft import EdgeChromiumDriverManager
+        options = EdgeOptions()
+        options.add_argument("--headless=new")
+        options.add_argument("--window-size=1280,900")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        return _mask_headless(webdriver.Edge(service=EdgeService(EdgeChromiumDriverManager().install()), options=options))
+    except Exception as e:
+        errors.append(f"Edge: {e}")
+    raise RuntimeError("Не удалось запустить браузер. Установите Chrome или Edge.\n" + "\n".join(errors))
+
+
 def launch_authenticated_browser():
     """Возвращает (driver, browser_name). Бросает RuntimeError, если не
     удалось запустить ни Chrome, ни Edge."""

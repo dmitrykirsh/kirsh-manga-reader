@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import QApplication
 from app import theme
 from app.constants import DATA_DIR
 from app.ui.backend import Backend
+from app.ui.network import RemoteImageProvider
 from app.ui.providers import IconProvider, CoverProvider, PageProvider
 
 QML_DIR = os.path.join(DATA_DIR, "app", "qml")
@@ -53,6 +54,7 @@ def run():
     engine.addImageProvider("icon", IconProvider())
     engine.addImageProvider("cover", CoverProvider())
     engine.addImageProvider("page", PageProvider(backend.reader))
+    engine.addImageProvider("remote", RemoteImageProvider())
     engine.rootContext().setContextProperty("backend", backend)
     engine.rootContext().setContextProperty("appDisplayFont", theme.DISPLAY_FONT)
     engine.load(QUrl.fromLocalFile(os.path.join(QML_DIR, "Main.qml")))

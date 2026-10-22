@@ -31,9 +31,9 @@ class MangaHubDownloadThread(BaseDownloadThread):
     если список глав реально оказался пуст, а не всегда наперёд.
     """
 
-    def __init__(self, url, dest_root, output_format="Папки с картинками"):
+    def __init__(self, url, dest_root, output_format="Папки с картинками", chapter_filter=None):
         url = url.rstrip('/')
-        super().__init__(url, dest_root, output_format=output_format)
+        super().__init__(url, dest_root, output_format=output_format, chapter_filter=chapter_filter)
 
         self.headers = {
             "User-Agent": USER_AGENT,
@@ -43,7 +43,8 @@ class MangaHubDownloadThread(BaseDownloadThread):
         }
 
         self.manga_name = None
-        self.chapters = []  # [{'id', 'vol', 'num', 'name'}]
+        self.chapters = []  # [{'id', 'vol', 'num', 'name', 'order'}]
+        self.empty_reason = ""  # сообщение сайта, если глав нет (см. get_chapters)
 
         cookies_dir = Path(os.environ.get('LOCALAPPDATA', '')) / 'KirshMangaReader'
         cookies_dir.mkdir(parents=True, exist_ok=True)
@@ -160,23 +161,38 @@ class MangaHubDownloadThread(BaseDownloadThread):
             raise RuntimeError(f"Сервер вернул {resp.status_code}")
         page = BeautifulSoup(resp.content, 'html.parser')
 
-        chapters = []
-        for div in page.find_all('div', class_="detail-chapter"):
-            bookmark = div.find('bookmark-progress')
-            if not bookmark or not bookmark.get('item-id'):
-                continue
+        # Строку главы ищем по <bookmark-progress item-id>, а не по классу обёртки:
+        # класс сайт уже менял (detail-chapter → detail-item), и парсер находил 0 глав.
+        # item-number — порядковый номер в списке (93 для «Том 10. Глава 71»), поэтому
+        # годится для сортировки, а номер главы для имени папки берём из названия.
+        chapters, used = [], set()
+        for bookmark in page.find_all('bookmark-progress', attrs={'item-id': True}):
+            row = bookmark.find_parent(attrs={'data-item-number': True}) or bookmark.parent
             chapter_id = bookmark['item-id']
-            num = bookmark.get('item-number', '0')
+            order = bookmark.get('item-number') or (row.get('data-item-number') if row else None) or '0'
 
-            a_tag = div.find('a', href=re.compile(r'^/read/\d+$'))
-            title_text = a_tag.get_text(" ", strip=True) if a_tag else f"Глава {num}"
+            a_tag = row.find('a', href=re.compile(r'^/read/\d+$')) if row else None
+            title_text = " ".join(a_tag.get_text(" ", strip=True).split()) if a_tag else f"Глава {order}"
             vol_match = re.search(r'Том\s*(\d+)', title_text)
             vol = vol_match.group(1) if vol_match else '0'
+            ch_match = re.search(r'Глава\s*(\d+(?:[.,]\d+)?)', title_text)
+            num = ch_match.group(1).replace(',', '.') if ch_match else order
+            if (vol, num) in used:  # экстры без своего номера — не перезаписывать соседнюю главу
+                num = f"{num}_{order}"
+            used.add((vol, num))
 
-            chapters.append({'id': chapter_id, 'vol': vol, 'num': num, 'name': title_text})
+            try:
+                order_key = float(order)
+            except ValueError:
+                order_key = 0.0
+            chapters.append({'id': chapter_id, 'vol': vol, 'num': num, 'name': title_text, 'order': order_key})
 
-        chapters.reverse()  # страница отдаёт от новых глав к старым
+        chapters.sort(key=lambda c: c['order'])  # страница отдаёт от новых глав к старым
         self.chapters = chapters
+        # Пустой список бывает и без всякой авторизации — например, «Главы удалены по
+        # требованию правообладателя». Такое сообщение сайта показываем как есть.
+        blank = page.select_one('sort-list .blankslate') or page.select_one('.blankslate')
+        self.empty_reason = " ".join(blank.get_text(" ", strip=True).split()) if blank and not chapters else ""
 
     def _confirm_age_gate(self, url, page):
         """18+ тайтлы вместо читалки отдают страницу "Подтверждение
@@ -237,16 +253,36 @@ class MangaHubDownloadThread(BaseDownloadThread):
 
         return saved
 
+    def _slug(self):
+        m = re.search(r'/title/([^/?#]+)', self.url)
+        return re.sub(r'[^a-zA-Z0-9_\-]', '', m.group(1)) if m else ''
+
+    def list_chapters(self):
+        slug = self._slug()
+        if not slug:
+            raise ValueError("Нужна ссылка на страницу манги вида https://mangahub.ru/title/…")
+        self._load_cookies()
+        self.get_chapters(slug)
+        if not self.chapters and self.empty_reason:
+            raise RuntimeError(self.empty_reason)
+        return [{"key": c['id'], "label": c['name'], "number": c['num']} for c in self.chapters]
+
     def run(self):
         try:
             self._load_cookies()
 
-            slug = self.url.split('/title/')[1].split('/')[0].split('?')[0]
-            slug = re.sub(r'[^a-zA-Z0-9_\-]', '', slug)
+            slug = self._slug()
+            if not slug:
+                self.error.emit("Нужна ссылка на страницу манги вида https://mangahub.ru/title/…")
+                return
 
             self.status.emit("Получение информации о манге...")
             self.get_manga_name(slug)
             self.get_chapters(slug)
+
+            if not self.chapters and self.empty_reason:
+                self.error.emit(f"MangaHub: {self.empty_reason}")
+                return
 
             if not self.chapters and not self._cookies_loaded:
                 self.status.emit("Главы не найдены — возможно, нужна авторизация")
@@ -270,12 +306,19 @@ class MangaHubDownloadThread(BaseDownloadThread):
                 self.error.emit("Главы не найдены")
                 return
 
+            chapters = self.filter_chapters(self.chapters, lambda c: c['num'], lambda c: c['id'])
+            if not chapters:
+                self.error.emit(f"Не найдено: {self.describe_filter()}. На сайте главы "
+                                f"{self.chapters[0]['num']}–{self.chapters[-1]['num']}.")
+                return
+
             manga_path = Path(self.dest_root) / self.manga_name
             manga_path.mkdir(parents=True, exist_ok=True)
 
             chapter_folders = []
-            total = len(self.chapters)
-            for idx, ch in enumerate(self.chapters, 1):
+            failed_chapters = []
+            total = len(chapters)
+            for idx, ch in enumerate(chapters, 1):
                 if self._cancel_requested:
                     self.status.emit("Скачивание отменено")
                     return
@@ -284,13 +327,32 @@ class MangaHubDownloadThread(BaseDownloadThread):
 
                 chapter_folder = manga_path / f"vol{ch['vol']}" / ch['num']
                 chapter_folder.mkdir(parents=True, exist_ok=True)
-                chapter_folders.append(chapter_folder)
 
                 saved = self._download_chapter_pages(ch['id'], chapter_folder)
                 if saved == 0:
+                    # Пустая папка главы в библиотеке выглядела бы как успешно скачанная глава.
                     logging.error(f"Глава {ch['name']}: не удалось скачать ни одной страницы")
+                    failed_chapters.append(ch['name'])
+                    shutil.rmtree(chapter_folder, ignore_errors=True)
+                    try:
+                        chapter_folder.parent.rmdir()  # том, если в нём больше ничего нет
+                    except OSError:
+                        pass
+                else:
+                    chapter_folders.append(chapter_folder)
 
                 time.sleep(0.3)
+
+            if not chapter_folders:
+                self.remove_empty_dirs(manga_path)
+                self.error.emit("Не удалось скачать ни одной страницы. Возможно, главы закрыты для "
+                                "гостей — войдите в аккаунт и повторите скачивание.")
+                return
+
+            if failed_chapters:
+                sample = "; ".join(failed_chapters[:5]) + ("…" if len(failed_chapters) > 5 else "")
+                self.warning.emit(f"Не скачалось {len(failed_chapters)} из {total} глав ({sample}). "
+                                  "Остальное скачано — повторите скачивание позже для недостающих глав.")
 
             if self.output_format == "CBZ (архив)":
                 self.status.emit("Упаковка в CBZ...")
@@ -299,8 +361,7 @@ class MangaHubDownloadThread(BaseDownloadThread):
                     chapter_folders,
                     lambda folder: f"{folder.parent.name}/{folder.name}"
                 )
-                if manga_path.exists():
-                    shutil.rmtree(manga_path, ignore_errors=True)
+                self.remove_empty_dirs(manga_path)
 
             self.finished.emit(self.manga_name, str(manga_path))
 

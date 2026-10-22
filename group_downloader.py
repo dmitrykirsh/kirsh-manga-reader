@@ -21,6 +21,16 @@ GROUP_DOMAINS = [
     "readmanga.live", "mintmanga.live",
     "web.usagi.one", "1.seimanga.me", "a.zazaza.me",
 ]
+# Части имён хостов этой сети: зеркала с номером/другой зоной (2.mintmanga.one и т.п.)
+# в GROUP_DOMAINS не перечислить заранее. Другие сайты той же федерации (mose.live —
+# сериалы, librebook — книги) на другом движке, их загрузчик не понимает.
+GROUP_HOST_PARTS = ("readmanga", "mintmanga", "seimanga", "zazaza", "usagi")
+
+
+def is_group_domain(domain):
+    """Хост сети ReadManga/MintManga, который понимает GroupDownloadThread."""
+    domain = (domain or "").lower()
+    return any(d in domain for d in GROUP_DOMAINS) or any(p in domain for p in GROUP_HOST_PARTS)
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -43,13 +53,13 @@ class GroupDownloadThread(BaseDownloadThread):
     (аналогично Com-X.life).
     """
 
-    def __init__(self, url, dest_root, output_format="Папки с картинками"):
+    def __init__(self, url, dest_root, output_format="Папки с картинками", chapter_filter=None):
         # Без этого при ссылке с завершающим "/" (".../slug/") построение
         # ссылок на главы дублирует слаг манги (".../slug/slug/vol1/1") —
         # url.rsplit('/', 1)[0] в этом случае не отрезает последний сегмент,
         # а только пустую строку после финального слэша.
         url = url.rstrip('/')
-        super().__init__(url, dest_root, output_format=output_format)
+        super().__init__(url, dest_root, output_format=output_format, chapter_filter=chapter_filter)
         self.domain = urlparse(url).netloc
 
         referer_sep = "&" if "?" in url else "?"
@@ -262,6 +272,15 @@ class GroupDownloadThread(BaseDownloadThread):
             vol, ch = '0', '0'
         return vol, ch
 
+    def list_chapters(self):
+        self._load_cookies()
+        self.get_chapter_links()
+        result = []
+        for link in self.links:
+            vol, ch = self._parse_vol_chapter(link)
+            result.append({"key": link, "label": f"Том {vol} · Глава {ch}", "number": ch})
+        return result
+
     def _download_chapter_pages(self, full_url, chapter_folder):
         script_text = None
         for attempt in range(4):
@@ -355,6 +374,13 @@ class GroupDownloadThread(BaseDownloadThread):
                 self.error.emit("Не удалось найти главы")
                 return
 
+            all_links = self.links
+            links = self.filter_chapters(all_links, lambda l: self._parse_vol_chapter(l)[1], lambda l: l)
+            if not links:
+                first, last = self._parse_vol_chapter(all_links[0])[1], self._parse_vol_chapter(all_links[-1])[1]
+                self.error.emit(f"Не найдено: {self.describe_filter()}. На сайте главы {first}–{last}.")
+                return
+
             manga_path = Path(self.dest_root) / self.manga_name
             manga_path.mkdir(parents=True, exist_ok=True)
 
@@ -363,8 +389,8 @@ class GroupDownloadThread(BaseDownloadThread):
             # заодно с самим скачиванием, а не отдельным проходом после него.
             volumes = {}
             failed_chapters = []
-            total = len(self.links)
-            for idx, link in enumerate(self.links, 1):
+            total = len(links)
+            for idx, link in enumerate(links, 1):
                 if self._cancel_requested:
                     self.status.emit("Скачивание отменено")
                     return
@@ -389,7 +415,7 @@ class GroupDownloadThread(BaseDownloadThread):
                     volumes.setdefault(vol, []).append(chapter_folder)
 
             if not volumes:
-                shutil.rmtree(manga_path, ignore_errors=True)
+                self.remove_empty_dirs(manga_path)
                 self.error.emit("Не удалось скачать ни одной страницы ни в одной главе. Возможно, ссылка "
                                  "устарела или сайт требует повторного входа в аккаунт — войдите заново "
                                  "и повторите скачивание.")
@@ -408,7 +434,7 @@ class GroupDownloadThread(BaseDownloadThread):
                         folders,
                         lambda folder: f"Глава {folder.name}"
                     )
-                    shutil.rmtree(manga_path / f"vol{vol}", ignore_errors=True)
+                    self.remove_empty_dirs(manga_path / f"vol{vol}")
 
             self.finished.emit(self.manga_name, str(manga_path))
 

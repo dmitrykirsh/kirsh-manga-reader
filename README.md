@@ -26,7 +26,7 @@
 ## ✨ Возможности
 
 ### 📥 Скачивание манги
-- **Поддержка сайтов**: MangaLib, HentaiLib, SlashLIB/YaoiLib, Com-X.life, MangaHub.ru, а также сеть ReadManga/MintManga (SeiManga, Usagi, Zazaza и их зеркала)
+- **Поддержка сайтов**: MangaLib, HentaiLib, SlashLIB/YaoiLib, Com-X.life, MangaHub.ru, MangaBuff.ru, а также сеть ReadManga/MintManga (SeiManga, Usagi, Zazaza и их зеркала)
 - **Автоопределение сайта** по вставленной ссылке
 - **Авторизация через браузер**: достаточно войти 1 раз, куки и токены сохраняются; один аккаунт MangaLib работает и для HentaiLib, и для SlashLIB
 - **Импорт куки из файла** — для сайтов, которые блокируют автоматический вход через браузер (экспорт расширением вроде "Get cookies.txt LOCALLY")
@@ -176,6 +176,7 @@ py -m PyInstaller KirshMangaReader.spec --noconfirm
 | **Com-X.life** | Куки. Получаются автоматически через браузер при нажатии "Авторизоваться" |
 | **ReadManga/MintManga и зеркала** | Куки. Выберите или введите домен для входа и нажмите "Авторизоваться", либо импортируйте куки из файла, если конкретное зеркало блокирует автоматический вход |
 | **MangaHub.ru** | Куки, но не обязательны — большинство манги скачивается без входа. Нужны только для приватного/18+ контента; получаются автоматически через браузер при нажатии "Авторизоваться" |
+| **MangaBuff.ru** | Куки, но не обязательны — главы скачиваются без входа. Нужны только для закрытых/18+ глав; получаются через браузер при нажатии "Войти в аккаунт" |
 
 **Важно**: для авторизации требуется установленный браузер Google Chrome или Microsoft Edge (если Chrome не найден, приложение автоматически использует Edge).
 
@@ -201,6 +202,7 @@ py -m PyInstaller KirshMangaReader.spec --noconfirm
 - **Куки Com-X.life**: `%LOCALAPPDATA%\KirshMangaReader\comx_cookies.json`
 - **Куки ReadManga/MintManga** (по одному файлу на домен): `%LOCALAPPDATA%\KirshMangaReader\group_cookies_<домен>.json`
 - **Куки MangaHub.ru**: `%LOCALAPPDATA%\KirshMangaReader\mangahub_cookies.json`
+- **Куки MangaBuff.ru**: `%LOCALAPPDATA%\KirshMangaReader\mangabuff_cookies.json`
 - **Пользовательские обложки**: `%LOCALAPPDATA%\KirshMangaReader\custom_covers\`
 - **Кэш информации о манге (MangaDex/MAL)**: `%LOCALAPPDATA%\KirshMangaReader\manga_info_cache\`
 

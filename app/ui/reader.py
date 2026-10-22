@@ -16,6 +16,10 @@ def _probe_sizes(manga, total):
     out = []
     for idx in range(total):
         w, h = 800, 1200
+        known = manga.get_page_size(idx)  # PDF: размер без отрисовки страницы
+        if known:
+            out.append(list(known))
+            continue
         data = manga.get_page_data(idx)
         if data:
             buf = QBuffer()
